@@ -3,6 +3,7 @@ import { useData } from '../context/DataContext';
 import { useAuth } from '../context/AuthContext';
 import { Property, BuildingWing } from '../types';
 import { getScopedProjects } from '../services/permissions';
+import { calculateBuildingProgress } from '../services/estimationEngine';
 import { ProgressBar } from '../components/common/ProgressBar';
 import { PropertyStatusBadge, PackageBadge } from '../components/common/Badge';
 import { 
@@ -15,7 +16,9 @@ import {
   User, 
   Calendar,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  TrendingUp,
+  Clock
 } from 'lucide-react';
 
 interface BuildingExplorerProps {
@@ -27,7 +30,7 @@ export const BuildingExplorer: React.FC<BuildingExplorerProps> = ({
   onNavigate, 
   onSelectProperty 
 }) => {
-  const { projects, properties } = useData();
+  const { projects, properties, tasks } = useData();
   const { canManageProjects, currentUser } = useAuth();
 
   const scopedProjects = useMemo(() => {
@@ -131,7 +134,8 @@ export const BuildingExplorer: React.FC<BuildingExplorerProps> = ({
             </button>
 
             {buildings.map(b => {
-              const bUnitsCount = projectProperties.filter(p => p.buildingId === b.id).length;
+              const bProps = projectProperties.filter(p => p.buildingId === b.id);
+              const bProg = calculateBuildingProgress(b.id, tasks, bProps);
               return (
                 <button
                   key={b.id}
@@ -144,15 +148,53 @@ export const BuildingExplorer: React.FC<BuildingExplorerProps> = ({
                 >
                   <Building2 className="w-3.5 h-3.5" />
                   <span>{b.name}</span>
-                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                    selectedBuildingId === b.id ? 'bg-slate-800 text-amber-300' : 'bg-slate-100 text-slate-600'
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-mono ${
+                    selectedBuildingId === b.id ? 'bg-slate-800 text-amber-300' : 'bg-slate-100 text-slate-700'
                   }`}>
-                    {bUnitsCount}
+                    {bProg.progress}% · {bProps.length}u
                   </span>
                 </button>
               );
             })}
           </div>
+
+          {/* Selected Building Progress Overview Banner */}
+          {selectedBuildingId !== 'all' && (() => {
+            const activeWing = buildings.find(b => b.id === selectedBuildingId);
+            const wingProps = projectProperties.filter(p => p.buildingId === selectedBuildingId);
+            const wingProgress = calculateBuildingProgress(selectedBuildingId, tasks, wingProps);
+            return (
+              <div className="p-4 bg-gradient-to-r from-slate-900 to-slate-800 rounded-xl text-white shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Building2 className="w-4 h-4 text-amber-400" />
+                    <h3 className="text-sm font-bold tracking-tight text-white">{activeWing?.name} — Wing Overview</h3>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-amber-300">
+                      Building-Level Progress
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300">
+                    Calculated dynamically from {wingProgress.totalTasks > 0 ? `${wingProgress.totalTasks} structural & fit-out tasks` : `${wingProps.length} registered apartment units`}.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-6 self-stretch sm:self-auto justify-between sm:justify-end">
+                  <div className="text-right">
+                    <div className="text-xl font-bold font-mono text-amber-400">{wingProgress.progress}%</div>
+                    <div className="text-[10px] font-mono text-slate-400">{wingProgress.remainingPercentage}% Remaining</div>
+                  </div>
+                  <div className="w-32 hidden md:block">
+                    <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+                      <div 
+                        className="bg-amber-400 h-2 rounded-full transition-all duration-500" 
+                        style={{ width: `${wingProgress.progress}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Floor Strip Selector */}
           {availableFloors.length > 0 && (
@@ -251,6 +293,10 @@ export const BuildingExplorer: React.FC<BuildingExplorerProps> = ({
               </div>
 
               <div className="mt-4 pt-3 border-t border-slate-100">
+                <div className="flex items-center justify-between text-xs mb-1.5 font-mono">
+                  <span className="text-slate-600 font-medium">Unit Progress:</span>
+                  <span className="font-bold text-slate-900">{prop.overallProgress}% <span className="font-normal text-slate-400">({100 - prop.overallProgress}% left)</span></span>
+                </div>
                 <ProgressBar progress={prop.overallProgress} verifiedProgress={prop.verifiedProgress} size="sm" />
 
                 <div className="mt-3 flex items-center justify-between text-xs">

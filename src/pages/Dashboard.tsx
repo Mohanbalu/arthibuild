@@ -313,9 +313,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
             ) : (
               filteredProjects.map(project => {
                 const projectUnits = filteredProperties.filter(p => p.projectId === project.id);
-                const avgProgress = projectUnits.length > 0
-                  ? Math.round(projectUnits.reduce((acc, p) => acc + p.overallProgress, 0) / projectUnits.length)
-                  : project.progress;
+                const displayProgress = project.progress;
 
               return (
                 <div key={project.id} className="p-5 hover:bg-slate-50/60 transition-colors">
@@ -341,7 +339,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
                   </div>
 
                   <div className="mt-3">
-                    <ProgressBar progress={avgProgress} showLabel size="md" />
+                    <ProgressBar progress={displayProgress} showLabel size="md" />
                   </div>
 
                   <div className="mt-3 flex items-center justify-between text-xs text-slate-500">

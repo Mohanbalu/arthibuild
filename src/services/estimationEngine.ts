@@ -151,43 +151,253 @@ export function calculatePropertyDeliveryForecast(
 }
 
 /**
+ * Resolves the effective completion percentage (0 - 100) for a task based on its status and recorded value:
+ * - Completed: 100%
+ * - In Progress: recorded completionPercentage (default 50% if not specified, clamped [0, 100])
+ * - Awaiting Approval: recorded completionPercentage (default 90% if not specified, clamped [0, 100])
+ * - Not Started: 0% unless explicit partial-completion value is recorded
+ * - Blocked: 0% unless explicit partial-completion value is recorded
+ */
+export function getTaskEffectiveCompletion(task: ConstructionTask): number {
+  const hasExplicit = typeof task.completionPercentage === 'number' && !isNaN(task.completionPercentage);
+  const explicit = hasExplicit ? Math.max(0, Math.min(100, Math.round(task.completionPercentage!))) : null;
+
+  switch (task.status) {
+    case 'Completed':
+      return 100;
+    case 'In Progress':
+      return explicit !== null ? explicit : 50;
+    case 'Awaiting Approval':
+      return explicit !== null ? explicit : 90;
+    case 'Not Started':
+    case 'Blocked':
+      return explicit !== null ? explicit : 0;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Validates and returns a positive weight for a task (defaults to 1 if missing or invalid).
+ */
+export function getTaskWeight(task: ConstructionTask): number {
+  const w = Number(task.weight);
+  if (isNaN(w) || w <= 0) return 1;
+  return Math.max(1, Math.round(w * 10) / 10);
+}
+
+export interface ProgressCalculationResult {
+  progress: number; // 0 to 100
+  remainingPercentage: number; // 100 - progress
+  verifiedProgress: number; // 0 to 100 (only PM verified completed milestones)
+  totalTasks: number;
+  completedTasks: number;
+  inProgressTasks: number;
+  blockedTasks: number;
+  notStartedTasks: number;
+  awaitingTasks: number;
+  totalWeight: number;
+  completedWeightedSum: number;
+  isAllEqualWeight: boolean;
+  hasTasks: boolean;
+  statusLabel: string; // e.g. "78% Complete" or "Tasks not configured"
+  calculationExplanation: string;
+  formula: string;
+  stagesBreakdown: {
+    stageId: number;
+    stageName: string;
+    totalTasks: number;
+    completedTasks: number;
+    stageWeight: number;
+    stageProgress: number;
+  }[];
+}
+
+/**
+ * Calculates weighted project progress dynamically from its linked tasks:
+ * Project Progress = Sum(Task Weight × Task Completion Percentage) / Sum(Task Weights)
+ * If all tasks have equal weights, this computes the average completion percentage.
+ */
+export function calculateProjectProgress(
+  projectTasks: ConstructionTask[]
+): ProgressCalculationResult {
+  if (!projectTasks || projectTasks.length === 0) {
+    return {
+      progress: 0,
+      remainingPercentage: 100,
+      verifiedProgress: 0,
+      totalTasks: 0,
+      completedTasks: 0,
+      inProgressTasks: 0,
+      blockedTasks: 0,
+      notStartedTasks: 0,
+      awaitingTasks: 0,
+      totalWeight: 0,
+      completedWeightedSum: 0,
+      isAllEqualWeight: true,
+      hasTasks: false,
+      statusLabel: 'Tasks not configured',
+      calculationExplanation: 'No construction tasks have been linked to this project yet. Add tasks or apply a stage template to track dynamic progress.',
+      formula: 'Sum(Weight × Completion) / Sum(Weight) = 0 / 0 = 0%',
+      stagesBreakdown: []
+    };
+  }
+
+  let totalWeight = 0;
+  let completedWeightedSum = 0;
+  let verifiedWeightedSum = 0;
+  let completedTasks = 0;
+  let inProgressTasks = 0;
+  let blockedTasks = 0;
+  let notStartedTasks = 0;
+  let awaitingTasks = 0;
+
+  const weights = projectTasks.map(getTaskWeight);
+  const firstWeight = weights[0];
+  const isAllEqualWeight = weights.every(w => Math.abs(w - firstWeight) < 0.001);
+
+  // Group by stage for stage-wise breakdown
+  const stageMap: Record<number, { stageName: string; tasks: ConstructionTask[] }> = {};
+
+  projectTasks.forEach(task => {
+    const weight = getTaskWeight(task);
+    const completion = getTaskEffectiveCompletion(task);
+    totalWeight += weight;
+    completedWeightedSum += weight * completion;
+
+    if (task.status === 'Completed' && task.approvalStatus === 'Verified by PM') {
+      verifiedWeightedSum += weight * 100;
+    }
+
+    if (task.status === 'Completed') completedTasks++;
+    else if (task.status === 'In Progress') inProgressTasks++;
+    else if (task.status === 'Blocked') blockedTasks++;
+    else if (task.status === 'Awaiting Approval') awaitingTasks++;
+    else notStartedTasks++;
+
+    if (!stageMap[task.stageId]) {
+      stageMap[task.stageId] = { stageName: task.stageName || `Stage ${task.stageId}`, tasks: [] };
+    }
+    stageMap[task.stageId].tasks.push(task);
+  });
+
+  const rawProgress = totalWeight > 0 ? completedWeightedSum / totalWeight : 0;
+  const progress = Math.min(100, Math.max(0, Math.round(rawProgress)));
+  const remainingPercentage = 100 - progress;
+
+  const rawVerified = totalWeight > 0 ? verifiedWeightedSum / totalWeight : 0;
+  const verifiedProgress = Math.min(100, Math.max(0, Math.round(rawVerified)));
+
+  const stagesBreakdown = Object.entries(stageMap).map(([sId, info]) => {
+    const stageId = Number(sId);
+    let sWeight = 0;
+    let sWeightedSum = 0;
+    let sCompleted = 0;
+    info.tasks.forEach(t => {
+      const w = getTaskWeight(t);
+      const c = getTaskEffectiveCompletion(t);
+      sWeight += w;
+      sWeightedSum += w * c;
+      if (t.status === 'Completed') sCompleted++;
+    });
+    const sProgress = sWeight > 0 ? Math.min(100, Math.max(0, Math.round(sWeightedSum / sWeight))) : 0;
+    return {
+      stageId,
+      stageName: info.stageName,
+      totalTasks: info.tasks.length,
+      completedTasks: sCompleted,
+      stageWeight: Math.round(sWeight * 10) / 10,
+      stageProgress: sProgress
+    };
+  }).sort((a, b) => a.stageId - b.stageId);
+
+  const formula = isAllEqualWeight
+    ? `Average Completion = Sum(Task Completion %) / ${projectTasks.length} = ${Math.round(completedWeightedSum / firstWeight)} / ${projectTasks.length} = ${progress}%`
+    : `Weighted Progress = Sum(Weight × Completion %) / Sum(Weights) = ${Math.round(completedWeightedSum)} / ${Math.round(totalWeight)} = ${progress}%`;
+
+  const calculationExplanation = `Calculated across ${projectTasks.length} linked tasks (${completedTasks} completed, ${inProgressTasks} in progress, ${blockedTasks} blocked, ${awaitingTasks} awaiting verification, ${notStartedTasks} not started). Total task weight: ${Math.round(totalWeight)}.`;
+
+  return {
+    progress,
+    remainingPercentage,
+    verifiedProgress,
+    totalTasks: projectTasks.length,
+    completedTasks,
+    inProgressTasks,
+    blockedTasks,
+    notStartedTasks,
+    awaitingTasks,
+    totalWeight: Math.round(totalWeight * 10) / 10,
+    completedWeightedSum: Math.round(completedWeightedSum * 10) / 10,
+    isAllEqualWeight,
+    hasTasks: true,
+    statusLabel: `${progress}% Complete`,
+    calculationExplanation,
+    formula,
+    stagesBreakdown
+  };
+}
+
+/**
  * Calculates property weighted progress percentage
- * based strictly on its CONTRACTED required tasks.
+ * based strictly on its CONTRACTED required tasks and validated weights/completion percentages.
  * Excluded activities are excluded from the denominator.
  */
 export function calculatePropertyProgress(
   property: Property,
   propertyTasks: ConstructionTask[]
-): { overallProgress: number; verifiedProgress: number } {
+): { overallProgress: number; verifiedProgress: number; hasTasks: boolean; remainingPercentage: number; calculationResult: ProgressCalculationResult } {
   const requiredTasks = propertyTasks.filter(task => {
     if (task.propertyId !== property.id) return false;
     return property.includedActivities.includes(task.activityId) || task.isCustomizationImpact;
   });
 
-  if (requiredTasks.length === 0) return { overallProgress: 0, verifiedProgress: 0 };
+  const calculationResult = calculateProjectProgress(requiredTasks);
 
-  const totalWeight = requiredTasks.reduce((sum, t) => sum + (t.weight || 1), 0);
-  
-  let completedWeight = 0;
-  let verifiedWeight = 0;
+  return {
+    overallProgress: calculationResult.progress,
+    verifiedProgress: calculationResult.verifiedProgress,
+    remainingPercentage: calculationResult.remainingPercentage,
+    hasTasks: calculationResult.hasTasks,
+    calculationResult
+  };
+}
 
-  requiredTasks.forEach(task => {
-    const w = task.weight || 1;
-    if (task.status === 'Completed') {
-      completedWeight += w;
-      if (task.approvalStatus === 'Verified by PM') {
-        verifiedWeight += w;
-      }
-    } else if (task.status === 'Awaiting Approval') {
-      // Coordinator submitted, pending manager sign-off
-      completedWeight += w * 0.9;
-    } else if (task.status === 'In Progress') {
-      completedWeight += w * 0.4;
-    }
+/**
+ * Calculates building/wing progress for an apartment complex from its units and tasks.
+ */
+export function calculateBuildingProgress(
+  buildingId: string,
+  projectTasks: ConstructionTask[],
+  buildingProperties: Property[]
+): { progress: number; remainingPercentage: number; totalUnits: number; totalTasks: number } {
+  const buildingTasks = projectTasks.filter(t => {
+    if (t.buildingId === buildingId) return true;
+    const prop = buildingProperties.find(p => p.id === t.propertyId);
+    return prop && prop.buildingId === buildingId;
   });
 
-  const overallProgress = Math.min(100, Math.round((completedWeight / totalWeight) * 100));
-  const verifiedProgress = Math.min(100, Math.round((verifiedWeight / totalWeight) * 100));
+  if (buildingTasks.length > 0) {
+    const res = calculateProjectProgress(buildingTasks);
+    return {
+      progress: res.progress,
+      remainingPercentage: res.remainingPercentage,
+      totalUnits: buildingProperties.length,
+      totalTasks: buildingTasks.length
+    };
+  }
 
-  return { overallProgress, verifiedProgress };
+  // Fallback to average of property units if tasks have not yet been assigned buildingId
+  if (buildingProperties.length > 0) {
+    const avg = Math.round(buildingProperties.reduce((sum, p) => sum + p.overallProgress, 0) / buildingProperties.length);
+    return {
+      progress: avg,
+      remainingPercentage: 100 - avg,
+      totalUnits: buildingProperties.length,
+      totalTasks: 0
+    };
+  }
+
+  return { progress: 0, remainingPercentage: 100, totalUnits: 0, totalTasks: 0 };
 }
+

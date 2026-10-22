@@ -11,11 +11,19 @@ import {
   DeliveryForecastLog,
   PackageType,
   PropertyStatus,
-  TaskStatus
+  TaskStatus,
+  ProjectType
 } from '../types';
 import { StorageService } from '../services/storage';
 import { STANDARD_ACTIVITIES, PACKAGE_DEFINITIONS } from '../constants/constructionData';
-import { calculatePropertyDeliveryForecast, calculatePropertyProgress } from '../services/estimationEngine';
+import { 
+  calculatePropertyDeliveryForecast, 
+  calculatePropertyProgress, 
+  calculateProjectProgress,
+  getTaskEffectiveCompletion,
+  ProgressCalculationResult 
+} from '../services/estimationEngine';
+import { generateTasksFromTemplate } from '../services/templateService';
 import { addDays, format, parseISO } from 'date-fns';
 
 interface DataContextType {
@@ -29,10 +37,15 @@ interface DataContextType {
   notifications: InAppNotification[];
   forecastLogs: DeliveryForecastLog[];
   
-  // Project Actions
-  addProject: (project: Omit<ConstructionProject, 'id' | 'progress'>) => ConstructionProject;
+  // Project Actions & Calculations
+  addProject: (
+    project: Omit<ConstructionProject, 'id' | 'progress'>,
+    options?: { applyTemplate?: boolean; templateType?: ProjectType }
+  ) => ConstructionProject;
   updateProject: (id: string, updates: Partial<ConstructionProject>) => void;
   deleteProject: (id: string) => void;
+  applyProjectTemplate: (projectId: string, templateType?: ProjectType) => void;
+  getProjectProgressDetails: (projectId: string) => ProgressCalculationResult;
 
   // Property Actions
   addProperty: (property: Omit<Property, 'id' | 'overallProgress' | 'verifiedProgress' | 'delayDays' | 'createdAt'>) => Property;
@@ -80,9 +93,48 @@ const DataContext = createContext<DataContextType | undefined>(undefined);
 export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   StorageService.init();
 
-  const [projects, setProjects] = useState<ConstructionProject[]>(() => StorageService.getProjects());
-  const [properties, setProperties] = useState<Property[]>(() => StorageService.getProperties());
-  const [tasks, setTasks] = useState<ConstructionTask[]>(() => StorageService.getTasks());
+  const [tasks, setTasks] = useState<ConstructionTask[]>(() => {
+    const rawTasks = StorageService.getTasks();
+    return rawTasks.map(t => {
+      const eff = getTaskEffectiveCompletion(t);
+      return {
+        ...t,
+        completionPercentage: t.completionPercentage !== undefined ? t.completionPercentage : eff
+      };
+    });
+  });
+
+  const [properties, setProperties] = useState<Property[]>(() => {
+    const rawProps = StorageService.getProperties();
+    const rawTasks = StorageService.getTasks();
+    const rawCustom = StorageService.getCustomizations();
+    return rawProps.map(prop => {
+      const propTasks = rawTasks.filter(t => t.propertyId === prop.id);
+      const { overallProgress, verifiedProgress } = calculatePropertyProgress(prop, propTasks);
+      const forecast = calculatePropertyDeliveryForecast(prop, propTasks, rawCustom);
+      return {
+        ...prop,
+        overallProgress,
+        verifiedProgress,
+        currentEstimatedDate: forecast.calculatedEstimatedDate,
+        delayDays: Math.max(0, forecast.varianceFromCommittedDays),
+        delayReason: forecast.primaryDelayReason
+      };
+    });
+  });
+
+  const [projects, setProjects] = useState<ConstructionProject[]>(() => {
+    const rawProjects = StorageService.getProjects();
+    const rawTasks = StorageService.getTasks();
+    return rawProjects.map(proj => {
+      const projTasks = rawTasks.filter(t => t.projectId === proj.id);
+      const calcResult = calculateProjectProgress(projTasks);
+      return {
+        ...proj,
+        progress: calcResult.progress
+      };
+    });
+  });
   const [photos, setPhotos] = useState<ConstructionPhoto[]>(() => StorageService.getPhotos());
   const [customizations, setCustomizations] = useState<CustomizationRequest[]>(() => StorageService.getCustomizations());
   const [inspections, setInspections] = useState<QualityInspection[]>(() => StorageService.getInspections());
@@ -112,34 +164,29 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setNotifications(prev => [newNotif, ...prev]);
   }, []);
 
-  // Recalculate property progress and delivery forecasts
-  const syncPropertyProgressAndForecast = useCallback((targetPropertyId: string) => {
-    setProperties(prevProps => {
-      return prevProps.map(prop => {
+  // Synchronous recalculation of linked property and project progress
+  const syncProgressForTaskSet = useCallback((
+    currentTasks: ConstructionTask[],
+    targetPropertyId?: string,
+    targetProjectId?: string
+  ) => {
+    // 1. Update Property Progress
+    if (targetPropertyId && targetPropertyId !== 'PROJECT_CORE') {
+      setProperties(prevProps => prevProps.map(prop => {
         if (prop.id !== targetPropertyId) return prop;
-
-        const propTasks = tasks.filter(t => t.propertyId === prop.id);
+        const propTasks = currentTasks.filter(t => t.propertyId === prop.id);
         const { overallProgress, verifiedProgress } = calculatePropertyProgress(prop, propTasks);
         const forecast = calculatePropertyDeliveryForecast(prop, propTasks, customizations);
 
-        // Derive updated status if not already handed over
         let updatedStatus: PropertyStatus = prop.status;
         if (prop.status !== 'Handed Over') {
-          if (overallProgress === 100) {
-            updatedStatus = 'Ready for Handover';
-          } else if (overallProgress >= 90) {
-            updatedStatus = 'Quality Inspection';
-          } else if (overallProgress >= 70) {
-            updatedStatus = 'Finishing';
-          } else if (overallProgress >= 50) {
-            updatedStatus = 'Services';
-          } else if (overallProgress >= 30) {
-            updatedStatus = 'Masonry';
-          } else if (overallProgress >= 15) {
-            updatedStatus = 'Structure';
-          } else if (overallProgress > 0) {
-            updatedStatus = 'Foundation';
-          }
+          if (overallProgress === 100) updatedStatus = 'Ready for Handover';
+          else if (overallProgress >= 90) updatedStatus = 'Quality Inspection';
+          else if (overallProgress >= 70) updatedStatus = 'Finishing';
+          else if (overallProgress >= 50) updatedStatus = 'Services';
+          else if (overallProgress >= 30) updatedStatus = 'Masonry';
+          else if (overallProgress >= 15) updatedStatus = 'Structure';
+          else if (overallProgress > 0) updatedStatus = 'Foundation';
         }
 
         return {
@@ -151,22 +198,73 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
           delayDays: Math.max(0, forecast.varianceFromCommittedDays),
           delayReason: forecast.primaryDelayReason
         };
-      });
-    });
-  }, [tasks, customizations]);
+      }));
+    }
+
+    // 2. Update Project Progress Dynamically
+    if (targetProjectId) {
+      setProjects(prevProjects => prevProjects.map(proj => {
+        if (proj.id !== targetProjectId) return proj;
+        const projTasks = currentTasks.filter(t => t.projectId === proj.id);
+        const calcResult = calculateProjectProgress(projTasks);
+        return {
+          ...proj,
+          progress: calcResult.progress
+        };
+      }));
+    }
+  }, [customizations]);
+
+  const syncPropertyProgressAndForecast = useCallback((targetPropertyId: string) => {
+    syncProgressForTaskSet(tasks, targetPropertyId, undefined);
+  }, [tasks, syncProgressForTaskSet]);
+
+  const getProjectProgressDetails = useCallback((projectId: string): ProgressCalculationResult => {
+    const projTasks = tasks.filter(t => t.projectId === projectId);
+    return calculateProjectProgress(projTasks);
+  }, [tasks]);
 
   // Project Actions
-  const addProject = (projectData: Omit<ConstructionProject, 'id' | 'progress'>): ConstructionProject => {
+  const addProject = (
+    projectData: Omit<ConstructionProject, 'id' | 'progress'>,
+    options?: { applyTemplate?: boolean; templateType?: ProjectType }
+  ): ConstructionProject => {
     const id = `PRJ-${String(projects.length + 1).padStart(2, '0')}`;
+    const shouldApplyTemplate = options?.applyTemplate !== undefined ? options.applyTemplate : true;
+
+    let initialTasks: ConstructionTask[] = [];
+    let initialProgress = 0;
+
+    if (shouldApplyTemplate) {
+      initialTasks = generateTasksFromTemplate(
+        {
+          id,
+          name: projectData.name,
+          type: options?.templateType || projectData.type,
+          startDate: projectData.startDate,
+          plannedCompletionDate: projectData.plannedCompletionDate,
+          status: projectData.status
+        },
+        'PROJECT_CORE',
+        'Site Milestone'
+      );
+      initialProgress = calculateProjectProgress(initialTasks).progress;
+    }
+
     const newProject: ConstructionProject = {
       ...projectData,
       id,
-      progress: 0
+      progress: initialProgress
     };
+
     setProjects(prev => [...prev, newProject]);
+    if (initialTasks.length > 0) {
+      setTasks(prev => [...prev, ...initialTasks]);
+    }
+
     addNotification({
       title: 'New Construction Project Registered',
-      message: `Project "${newProject.name}" (${newProject.type}) has been created at ${newProject.location}.`,
+      message: `Project "${newProject.name}" (${newProject.type}) registered at ${newProject.location}.${shouldApplyTemplate ? ` Generated ${initialTasks.length} construction stage tasks.` : ' Tasks not yet configured.'}`,
       category: 'system',
       targetRoles: ['admin', 'project_manager'],
       projectId: newProject.id
@@ -182,6 +280,31 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setProjects(prev => prev.filter(p => p.id !== id));
     setProperties(prev => prev.filter(p => p.projectId !== id));
     setTasks(prev => prev.filter(t => t.projectId !== id));
+  };
+
+  const applyProjectTemplate = (projectId: string, templateType?: ProjectType) => {
+    const project = projects.find(p => p.id === projectId);
+    if (!project) return;
+
+    const newTasks = generateTasksFromTemplate(
+      { ...project, type: templateType || project.type },
+      'PROJECT_CORE',
+      'Site Milestone'
+    );
+
+    const nextTasks = [...tasks.filter(t => t.projectId !== projectId), ...newTasks];
+    setTasks(nextTasks);
+
+    const calcResult = calculateProjectProgress(newTasks);
+    setProjects(prev => prev.map(p => p.id === projectId ? { ...p, progress: calcResult.progress } : p));
+
+    addNotification({
+      title: 'Construction Stages & Tasks Initialized',
+      message: `Initialized ${newTasks.length} construction tasks from ${templateType || project.type} template for "${project.name}".`,
+      category: 'milestone',
+      targetRoles: ['admin', 'project_manager'],
+      projectId
+    });
   };
 
   // Property Actions with auto-generation of package-specific construction tasks
@@ -208,6 +331,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const plannedFinish = addDays(rollingStartDate, act.defaultDurationDays);
       const taskId = `TSK-${id}-${idx + 1}`;
       const prevTaskId = idx > 0 ? `TSK-${id}-${idx}` : undefined;
+      const initialStatus: TaskStatus = idx === 0 ? 'In Progress' : 'Not Started';
 
       generatedTasks.push({
         id: taskId,
@@ -219,10 +343,12 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         projectId: newProperty.projectId,
         propertyId: id,
         unitNumber: newProperty.unitNumber,
+        buildingId: newProperty.buildingId,
         assignedTo: 'Arthi Project Team',
         plannedStartDate: format(rollingStartDate, 'yyyy-MM-dd'),
         plannedFinishDate: format(plannedFinish, 'yyyy-MM-dd'),
-        status: idx === 0 ? 'In Progress' : 'Not Started',
+        status: initialStatus,
+        completionPercentage: initialStatus === 'In Progress' ? 50 : 0,
         priority: act.stageId <= 3 ? 'Critical' : 'Medium',
         dependencies: prevTaskId ? [prevTaskId] : [],
         weight: act.stageId <= 3 ? 12 : 7,
@@ -231,12 +357,15 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         approvalStatus: 'Pending Verification'
       });
 
-      // Increment rolling start date
       rollingStartDate = addDays(plannedFinish, 1);
     });
 
+    const nextTasks = [...tasks, ...generatedTasks];
     setProperties(prev => [...prev, newProperty]);
-    setTasks(prev => [...prev, ...generatedTasks]);
+    setTasks(nextTasks);
+
+    // Recalculate progress immediately
+    syncProgressForTaskSet(nextTasks, id, newProperty.projectId);
 
     addNotification({
       title: 'New Property Unit Registered',
@@ -255,22 +384,48 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const deleteProperty = (id: string) => {
+    const prop = properties.find(p => p.id === id);
     setProperties(prev => prev.filter(p => p.id !== id));
-    setTasks(prev => prev.filter(t => t.propertyId !== id));
+    const nextTasks = tasks.filter(t => t.propertyId !== id);
+    setTasks(nextTasks);
     setPhotos(prev => prev.filter(ph => ph.propertyId !== id));
+    if (prop) {
+      syncProgressForTaskSet(nextTasks, undefined, prop.projectId);
+    }
   };
 
-  // Task Actions with dependency validation
+  // Task Actions with dependency validation and immediate weighted recalculation
   const addTask = (taskData: Omit<ConstructionTask, 'id' | 'approvalStatus' | 'progressNotes' | 'photoUrls'>): ConstructionTask => {
     const id = `TSK-${Date.now().toString(36).toUpperCase()}`;
+    const weight = Math.max(1, Number(taskData.weight) || 1);
+    
+    let completionPercentage = typeof taskData.completionPercentage === 'number' && !isNaN(taskData.completionPercentage)
+      ? Math.max(0, Math.min(100, Math.round(taskData.completionPercentage)))
+      : undefined;
+
+    if (completionPercentage === undefined) {
+      if (taskData.status === 'Completed') completionPercentage = 100;
+      else if (taskData.status === 'In Progress') completionPercentage = 50;
+      else if (taskData.status === 'Awaiting Approval') completionPercentage = 90;
+      else completionPercentage = 0;
+    }
+
     const newTask: ConstructionTask = {
       ...taskData,
       id,
+      weight,
+      completionPercentage,
       approvalStatus: 'Pending Verification',
-      progressNotes: ['Task created in schedule.'],
+      progressNotes: ['Task created in construction schedule.'],
       photoUrls: []
     };
-    setTasks(prev => [...prev, newTask]);
+
+    const nextTasks = [...tasks, newTask];
+    setTasks(nextTasks);
+
+    // Synchronously update both property and project progress
+    syncProgressForTaskSet(nextTasks, newTask.propertyId, newTask.projectId);
+
     return newTask;
   };
 
@@ -291,17 +446,49 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    setTasks(prev => {
-      const next = prev.map(t => {
-        if (t.id !== id) return t;
-        const updated = { ...t, ...updates };
-        if (updates.status === 'Completed' && !updated.actualCompletionDate) {
-          updated.actualCompletionDate = format(new Date(), 'yyyy-MM-dd');
-        }
-        return updated;
-      });
-      return next;
+    const processedUpdates: Partial<ConstructionTask> = { ...updates };
+    if (updates.weight !== undefined) {
+      processedUpdates.weight = Math.max(1, Number(updates.weight) || 1);
+    }
+
+    // Determine completion percentage based on updated status and explicit value
+    if (updates.status === 'Completed') {
+      processedUpdates.completionPercentage = 100;
+      if (!existing.actualCompletionDate) {
+        processedUpdates.actualCompletionDate = format(new Date(), 'yyyy-MM-dd');
+      }
+    } else if (updates.status === 'In Progress') {
+      if (updates.completionPercentage !== undefined) {
+        processedUpdates.completionPercentage = Math.max(0, Math.min(100, Math.round(Number(updates.completionPercentage))));
+      } else if (existing.completionPercentage === 0 || existing.completionPercentage === undefined) {
+        processedUpdates.completionPercentage = 50;
+      }
+    } else if (updates.status === 'Awaiting Approval') {
+      if (updates.completionPercentage !== undefined) {
+        processedUpdates.completionPercentage = Math.max(0, Math.min(100, Math.round(Number(updates.completionPercentage))));
+      } else if (existing.completionPercentage === 0 || existing.completionPercentage === undefined) {
+        processedUpdates.completionPercentage = 90;
+      }
+    } else if (updates.status === 'Not Started' || updates.status === 'Blocked') {
+      if (updates.completionPercentage !== undefined) {
+        processedUpdates.completionPercentage = Math.max(0, Math.min(100, Math.round(Number(updates.completionPercentage))));
+      } else if (existing.status === 'Completed') {
+        processedUpdates.completionPercentage = 0;
+      }
+    } else if (updates.completionPercentage !== undefined) {
+      processedUpdates.completionPercentage = Math.max(0, Math.min(100, Math.round(Number(updates.completionPercentage))));
+    }
+
+    const nextTasks = tasks.map(t => {
+      if (t.id !== id) return t;
+      return { ...t, ...processedUpdates };
     });
+
+    setTasks(nextTasks);
+
+    const targetPropId = updates.propertyId || existing.propertyId;
+    const targetProjId = updates.projectId || existing.projectId;
+    syncProgressForTaskSet(nextTasks, targetPropId, targetProjId);
 
     // Notify if blocked
     if (updates.status === 'Blocked') {
@@ -310,15 +497,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         message: `Task "${existing.title}" is blocked: ${updates.blockedReason || 'Prerequisite / material delay'}.`,
         category: 'delay',
         targetRoles: ['admin', 'project_manager'],
-        propertyId: existing.propertyId,
-        projectId: existing.projectId
+        propertyId: targetPropId,
+        projectId: targetProjId
       });
     }
-
-    // Trigger sync for property
-    setTimeout(() => {
-      syncPropertyProgressAndForecast(existing.propertyId);
-    }, 50);
 
     return { success: true };
   };
@@ -327,16 +509,21 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const task = tasks.find(t => t.id === id);
     if (!task) return;
 
-    setTasks(prev => prev.map(t => {
+    const nextTasks = tasks.map(t => {
       if (t.id !== id) return t;
       return {
         ...t,
-        status: 'Completed',
-        approvalStatus: 'Verified by PM',
+        status: 'Completed' as TaskStatus,
+        completionPercentage: 100,
+        approvalStatus: 'Verified by PM' as const,
         approvedBy: verifiedBy,
-        approvedAt: format(new Date(), 'yyyy-MM-dd')
+        approvedAt: format(new Date(), 'yyyy-MM-dd'),
+        actualCompletionDate: t.actualCompletionDate || format(new Date(), 'yyyy-MM-dd')
       };
-    }));
+    });
+
+    setTasks(nextTasks);
+    syncProgressForTaskSet(nextTasks, task.propertyId, task.projectId);
 
     addNotification({
       title: 'Milestone Verified by PM',
@@ -346,18 +533,15 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       propertyId: task.propertyId,
       projectId: task.projectId
     });
-
-    setTimeout(() => {
-      syncPropertyProgressAndForecast(task.propertyId);
-    }, 50);
   };
 
   const deleteTask = (id: string) => {
     const task = tasks.find(t => t.id === id);
-    setTasks(prev => prev.filter(t => t.id !== id));
-    if (task) {
-      setTimeout(() => syncPropertyProgressAndForecast(task.propertyId), 50);
-    }
+    if (!task) return;
+
+    const nextTasks = tasks.filter(t => t.id !== id);
+    setTasks(nextTasks);
+    syncProgressForTaskSet(nextTasks, task.propertyId, task.projectId);
   };
 
   // Photo Actions
@@ -774,6 +958,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         addProject,
         updateProject,
         deleteProject,
+        applyProjectTemplate,
+        getProjectProgressDetails,
         addProperty,
         updateProperty,
         deleteProperty,

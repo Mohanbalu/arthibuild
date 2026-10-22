@@ -152,6 +152,8 @@ export interface ConstructionTask {
   priority: TaskPriority;
   dependencies: string[]; // Task IDs that must be completed first
   weight: number; // Weight in progress calculation (1-10)
+  completionPercentage?: number; // Measured completion percentage (0 - 100)
+  buildingId?: string; // Optional building/wing ID for apartment complexes
   progressNotes: string[];
   photoUrls: string[];
   approvalStatus: 'Pending Verification' | 'Verified by PM' | 'Requires Rework';

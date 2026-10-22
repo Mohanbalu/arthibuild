@@ -218,9 +218,7 @@ export const PMDashboard: React.FC<PMDashboardProps> = ({ onNavigate }) => {
               ) : (
                 pmProjects.map(project => {
                   const siteUnits = pmProperties.filter(p => p.projectId === project.id);
-                  const siteProgress = siteUnits.length > 0
-                    ? Math.round(siteUnits.reduce((acc, p) => acc + p.overallProgress, 0) / siteUnits.length)
-                    : project.progress;
+                  const siteProgress = project.progress;
 
                   return (
                     <div key={project.id} className="p-5 hover:bg-slate-50/70 transition-colors">

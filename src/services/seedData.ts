@@ -11,6 +11,7 @@ import {
   DeliveryForecastLog 
 } from '../types';
 import { PACKAGE_DEFINITIONS } from '../constants/constructionData';
+import { generateTasksFromTemplate } from './templateService';
 
 export const DEMO_USERS: UserProfile[] = [
   {
@@ -894,7 +895,7 @@ export const INITIAL_PROPERTIES: Property[] = [
   }
 ];
 
-export const INITIAL_TASKS: ConstructionTask[] = [
+const RAW_INITIAL_TASKS: ConstructionTask[] = [
   // --- Tasks for Customer Unit: PROP-EH-A301 (Tower A - Unit 301) ---
   {
     id: 'TSK-A301-01',
@@ -1604,6 +1605,32 @@ export const INITIAL_TASKS: ConstructionTask[] = [
     approvalStatus: 'Pending Verification'
   }
 ];
+
+export const INITIAL_TASKS: ConstructionTask[] = (() => {
+  const tasksWithCompletion = RAW_INITIAL_TASKS.map(t => {
+    let completionPercentage = t.completionPercentage;
+    if (completionPercentage === undefined) {
+      if (t.status === 'Completed') completionPercentage = 100;
+      else if (t.status === 'In Progress') completionPercentage = 60;
+      else if (t.status === 'Awaiting Approval') completionPercentage = 90;
+      else completionPercentage = 0;
+    }
+    return { ...t, completionPercentage };
+  });
+
+  const generated: ConstructionTask[] = [];
+
+  INITIAL_PROJECTS.forEach(proj => {
+    // If project has fewer than 4 linked tasks, generate standard stage template tasks
+    const count = tasksWithCompletion.filter(t => t.projectId === proj.id).length;
+    if (count < 4) {
+      const tmplTasks = generateTasksFromTemplate(proj, 'PROJECT_CORE', 'Site Milestone');
+      generated.push(...tmplTasks);
+    }
+  });
+
+  return [...tasksWithCompletion, ...generated];
+})();
 
 export const INITIAL_CUSTOMIZATIONS: CustomizationRequest[] = [
   {

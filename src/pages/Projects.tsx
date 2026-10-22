@@ -7,6 +7,8 @@ import { getScopedProjects } from '../services/permissions';
 import { Modal } from '../components/common/Modal';
 import { ConfirmDialog } from '../components/common/ConfirmDialog';
 import { ProgressBar } from '../components/common/ProgressBar';
+import { calculateProjectProgress, ProgressCalculationResult } from '../services/estimationEngine';
+import { CONSTRUCTION_STAGES } from '../constants/constructionData';
 import { 
   Building2, 
   Plus, 
@@ -20,11 +22,20 @@ import {
   Edit3, 
   Trash2, 
   ChevronRight,
-  Layers,
+  Layers, 
   ArrowRight,
   Compass,
   Navigation,
-  AlertCircle
+  AlertCircle,
+  Calculator,
+  Sliders,
+  CheckCircle2,
+  Clock,
+  Sparkles,
+  Eye,
+  Check,
+  Percent,
+  X
 } from 'lucide-react';
 
 interface CityLocationInfo {
@@ -166,10 +177,21 @@ export const REGIONAL_LOCATION_PRESETS: Record<string, Record<string, CityLocati
 interface ProjectsProps {
   onNavigate: (view: string, id?: string) => void;
   onSelectProject: (projectId: string) => void;
+  initialInspectingProjectId?: string;
 }
 
-export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject }) => {
-  const { projects, properties, addProject, updateProject, deleteProject } = useData();
+export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject, initialInspectingProjectId }) => {
+  const { 
+    projects, 
+    properties, 
+    tasks, 
+    addProject, 
+    updateProject, 
+    deleteProject, 
+    addTask, 
+    updateTask, 
+    applyProjectTemplate 
+  } = useData();
   const { canManageProjects, availableUsers, role, currentUser } = useAuth();
 
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
@@ -182,6 +204,27 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
   const [editingProject, setEditingProject] = useState<ConstructionProject | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
+
+  // Construction Stages Template Option for New Project
+  const [formApplyTemplate, setFormApplyTemplate] = useState(true);
+  const [formTemplateType, setFormTemplateType] = useState<ProjectType>('Apartment Complex');
+
+  // Project Progress Inspection / Details View
+  const [inspectingProject, setInspectingProject] = useState<ConstructionProject | null>(() => {
+    if (initialInspectingProjectId) {
+      return projects.find(p => p.id === initialInspectingProjectId) || null;
+    }
+    return null;
+  });
+
+  // Quick Add Tasks / Apply Template Modal
+  const [quickAddModalProject, setQuickAddModalProject] = useState<ConstructionProject | null>(null);
+  const [quickTaskTitle, setQuickTaskTitle] = useState('');
+  const [quickTaskStageId, setQuickTaskStageId] = useState(2);
+  const [quickTaskWeight, setQuickTaskWeight] = useState(8);
+  const [quickTaskStatus, setQuickTaskStatus] = useState<TaskStatus>('In Progress');
+  const [quickTaskCompletion, setQuickTaskCompletion] = useState(50);
+  const [selectedInspectStageId, setSelectedInspectStageId] = useState<number | 'all'>('all');
 
   // Location Filtering State
   const [locationFilters, setLocationFilters] = useState<LocationFilterState>({
@@ -446,6 +489,9 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
         status: formStatus,
         totalUnits: 0,
         buildings
+      }, {
+        applyTemplate: formApplyTemplate,
+        templateType: formTemplateType
       });
     }
 
@@ -587,10 +633,8 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
       {viewMode === 'grid' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredProjects.map(project => {
-            const projectUnits = properties.filter(p => p.projectId === project.id);
-            const avgProgress = projectUnits.length > 0
-              ? Math.round(projectUnits.reduce((acc, p) => acc + p.overallProgress, 0) / projectUnits.length)
-              : 0;
+            const projectTasks = tasks.filter(t => t.projectId === project.id);
+            const progressResult = calculateProjectProgress(projectTasks);
 
             return (
               <div
@@ -632,8 +676,41 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
                 </div>
 
                 {/* Progress Section */}
-                <div className="px-5 py-3 bg-slate-50/60 border-t border-slate-100">
-                  <ProgressBar progress={avgProgress} showLabel size="sm" />
+                <div className="px-5 py-3.5 bg-slate-50/70 border-t border-slate-100">
+                  {progressResult.hasTasks ? (
+                    <div className="space-y-1.5">
+                      <ProgressBar
+                        progress={progressResult.progress}
+                        verifiedProgress={progressResult.verifiedProgress}
+                        showLabel
+                        size="sm"
+                      />
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono pt-0.5">
+                        <span>{progressResult.completedTasks} of {progressResult.totalTasks} tasks complete</span>
+                        <span className="font-semibold text-slate-700">{progressResult.remainingPercentage}% remaining</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between py-0.5">
+                      <div className="flex items-center gap-1.5 text-amber-800 bg-amber-50 border border-amber-200/80 px-2 py-1 rounded-md text-[11px] font-semibold">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        <span>Tasks not configured</span>
+                      </div>
+                      {canManageProjects && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setQuickAddModalProject(project);
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors shadow-2xs"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>Add Tasks</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Metadata & Actions Footer */}
@@ -649,7 +726,20 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setInspectingProject(project);
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                      title="Inspect Construction Stages & Calculation"
+                    >
+                      <Calculator className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Inspect</span>
+                    </button>
+
                     {canManageProjects && (
                       <>
                         <button
@@ -671,7 +761,7 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
                         </button>
                       </>
                     )}
-                    <span className="text-amber-700 group-hover:translate-x-0.5 transition-transform">
+                    <span className="text-amber-700 group-hover:translate-x-0.5 transition-transform ml-0.5">
                       <ChevronRight className="w-4 h-4" />
                     </span>
                   </div>
@@ -699,10 +789,8 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredProjects.map(project => {
-                  const projectUnits = properties.filter(p => p.projectId === project.id);
-                  const avgProgress = projectUnits.length > 0
-                    ? Math.round(projectUnits.reduce((acc, p) => acc + p.overallProgress, 0) / projectUnits.length)
-                    : 0;
+                  const projectTasks = tasks.filter(t => t.projectId === project.id);
+                  const progressResult = calculateProjectProgress(projectTasks);
 
                   return (
                     <tr
@@ -731,32 +819,68 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
                         {project.projectManagerName}
                       </td>
                       <td className="px-5 py-4 font-mono text-slate-700 font-medium">
-                        {projectUnits.length}
+                        {projectTasks.length} tasks
                       </td>
-                      <td className="px-5 py-4 w-40">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-slate-800 font-semibold">{avgProgress}%</span>
-                          <div className="flex-1 bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                            <div className="bg-slate-900 h-full" style={{ width: `${avgProgress}%` }} />
+                      <td className="px-5 py-4 min-w-[180px]">
+                        {progressResult.hasTasks ? (
+                          <div className="space-y-1">
+                            <ProgressBar
+                              progress={progressResult.progress}
+                              verifiedProgress={progressResult.verifiedProgress}
+                              showLabel
+                              size="sm"
+                            />
+                            <div className="text-[10px] text-slate-500 font-mono">
+                              {progressResult.completedTasks}/{progressResult.totalTasks} complete · {progressResult.remainingPercentage}% remaining
+                            </div>
                           </div>
-                        </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded font-mono">
+                              <AlertCircle className="w-3 h-3 text-amber-600" />
+                              Tasks not configured
+                            </span>
+                            {canManageProjects && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setQuickAddModalProject(project);
+                                }}
+                                className="px-2 py-0.5 text-[10px] font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded transition-colors"
+                              >
+                                + Add
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="px-5 py-4 font-mono text-slate-600">
                         {project.plannedCompletionDate}
                       </td>
                       <td className="px-5 py-4 text-right">
                         <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => setInspectingProject(project)}
+                            className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md"
+                            title="Inspect Calculation & Stages"
+                          >
+                            <Calculator className="w-3.5 h-3.5 text-amber-600" />
+                          </button>
                           {canManageProjects && (
                             <>
                               <button
                                 onClick={(e) => handleOpenEdit(project, e)}
                                 className="p-1.5 text-slate-400 hover:text-slate-700 rounded-md hover:bg-slate-100"
+                                title="Edit Project"
                               >
                                 <Edit3 className="w-3.5 h-3.5" />
                               </button>
                               <button
                                 onClick={() => setDeleteConfirmId(project.id)}
                                 className="p-1.5 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50"
+                                title="Delete Project"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -768,6 +892,7 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
                               onNavigate('project-detail', project.id);
                             }}
                             className="p-1.5 text-amber-700 hover:text-amber-900"
+                            title="Open Explorer"
                           >
                             <ArrowRight className="w-4 h-4" />
                           </button>
@@ -1199,6 +1324,49 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
             </div>
           </div>
 
+          {/* 3. Construction Stages & Tasks Blueprint Template Workflow */}
+          {!editingProject && (
+            <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-xl space-y-2.5">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formApplyTemplate}
+                    onChange={(e) => setFormApplyTemplate(e.target.checked)}
+                    className="w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <span className="text-xs font-bold text-slate-900">
+                    Initialize standard construction stages & tasks immediately
+                  </span>
+                </label>
+                <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                  Recommended
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600 pl-6 leading-relaxed">
+                Automatically provisions weighted milestone tasks across all 15 construction stages for dynamic, automated progress tracking. If unchecked, project will register with <span className="font-semibold text-amber-900 font-mono">Tasks not configured (0%)</span> and an Add Tasks action.
+              </p>
+
+              {formApplyTemplate && (
+                <div className="pl-6 pt-1">
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Select Stage Blueprint Template:
+                  </label>
+                  <select
+                    value={formTemplateType}
+                    onChange={(e) => setFormTemplateType(e.target.value as ProjectType)}
+                    className="w-full px-2.5 py-1.5 text-xs border border-amber-300 rounded-lg bg-white focus:ring-1 focus:ring-amber-500 font-medium shadow-2xs"
+                  >
+                    <option value="Apartment Complex">Apartment Complex Template (15 Stages: Piling, Raft, Columns, MEP, Elevators & Lobbies)</option>
+                    <option value="Villa Community">Villa Community Template (15 Stages: Demarcation, Duplex RCC, Gardens, Solar & Clubhouse)</option>
+                    <option value="Independent House">Independent House Template (15 Stages: Footings, Red Brick, Roof Slab, Woodwork & Handover)</option>
+                    <option value="Apartment">Apartment / Single Wing Template</option>
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
             <button
               type="button"
@@ -1216,6 +1384,529 @@ export const Projects: React.FC<ProjectsProps> = ({ onNavigate, onSelectProject 
           </div>
         </form>
       </Modal>
+
+      {/* Project Details & Dynamic Calculation Inspection Modal */}
+      {inspectingProject && (() => {
+        const pTasks = tasks.filter(t => t.projectId === inspectingProject.id);
+        const calc = calculateProjectProgress(pTasks);
+        const filteredTasksForModal = selectedInspectStageId === 'all' 
+          ? pTasks 
+          : pTasks.filter(t => t.stageId === selectedInspectStageId);
+
+        return (
+          <Modal
+            isOpen={true}
+            onClose={() => {
+              setInspectingProject(null);
+              setSelectedInspectStageId('all');
+            }}
+            title={inspectingProject.name}
+            subtitle={`${inspectingProject.code} · ${inspectingProject.type} · ${inspectingProject.location}`}
+            maxWidth="4xl"
+          >
+            <div className="space-y-6">
+              {/* Executive Progress KPI Strip */}
+              <div className="p-4 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-xl shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-4 mb-3">
+                  <div>
+                    <span className="text-[11px] font-mono text-amber-400 font-semibold uppercase tracking-wider">
+                      Dynamic Construction Progress
+                    </span>
+                    <div className="flex items-baseline gap-3 mt-0.5">
+                      <span className="text-3xl font-extrabold font-mono text-white">
+                        {calc.hasTasks ? `${calc.progress}%` : 'Tasks not configured'}
+                      </span>
+                      {calc.hasTasks && (
+                        <span className="text-xs font-mono text-slate-300">
+                          ({calc.remainingPercentage}% remaining · {calc.verifiedProgress}% PM verified)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                      inspectingProject.status === 'Completed' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30' :
+                      inspectingProject.status === 'Finishing' ? 'bg-amber-500/20 text-amber-300 border border-amber-400/30' :
+                      'bg-sky-500/20 text-sky-300 border border-sky-400/30'
+                    }`}>
+                      {inspectingProject.status}
+                    </span>
+                    {canManageProjects && (
+                      <button
+                        onClick={() => {
+                          setQuickAddModalProject(inspectingProject);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors shadow-xs"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add Task</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {calc.hasTasks ? (
+                  <ProgressBar
+                    progress={calc.progress}
+                    verifiedProgress={calc.verifiedProgress}
+                    showLabel={false}
+                    size="md"
+                    className="mt-1"
+                  />
+                ) : (
+                  <div className="text-xs text-amber-300/90 font-mono py-1">
+                    0% — No tasks have been linked to this project yet.
+                  </div>
+                )}
+              </div>
+
+              {/* Mathematical Calculation Breakdown Formula Card */}
+              <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-xl space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-900">
+                    <Calculator className="w-4 h-4 text-amber-600" />
+                    <span>Weighted Calculation Methodology & Live Formula</span>
+                  </div>
+                  <span className="text-[11px] font-mono text-slate-500">
+                    Formula: Sum(Weight × Completion) / Sum(Weights)
+                  </span>
+                </div>
+
+                <div className="bg-white p-3 rounded-lg border border-slate-200 font-mono text-xs text-slate-800 space-y-1.5 shadow-2xs">
+                  <div className="text-amber-800 font-bold">
+                    {calc.formula}
+                  </div>
+                  <div className="text-[11px] text-slate-600">
+                    {calc.calculationExplanation}
+                  </div>
+                </div>
+
+                {/* Status Counts Pill Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-xs font-mono">
+                  <div className="bg-emerald-50 border border-emerald-200 p-2 rounded-lg text-emerald-900">
+                    <span className="block text-[10px] uppercase font-bold text-emerald-700">Completed (100%)</span>
+                    <strong className="text-base">{calc.completedTasks}</strong> tasks
+                  </div>
+                  <div className="bg-sky-50 border border-sky-200 p-2 rounded-lg text-sky-900">
+                    <span className="block text-[10px] uppercase font-bold text-sky-700">In Progress (Record %)</span>
+                    <strong className="text-base">{calc.inProgressTasks}</strong> tasks
+                  </div>
+                  <div className="bg-amber-50 border border-amber-200 p-2 rounded-lg text-amber-900">
+                    <span className="block text-[10px] uppercase font-bold text-amber-700">Awaiting PM Sign</span>
+                    <strong className="text-base">{calc.awaitingTasks}</strong> tasks
+                  </div>
+                  <div className="bg-rose-50 border border-rose-200 p-2 rounded-lg text-rose-900">
+                    <span className="block text-[10px] uppercase font-bold text-rose-700">Blocked (0%)</span>
+                    <strong className="text-base">{calc.blockedTasks}</strong> tasks
+                  </div>
+                  <div className="bg-slate-100 border border-slate-200 p-2 rounded-lg text-slate-800">
+                    <span className="block text-[10px] uppercase font-bold text-slate-600">Not Started (0%)</span>
+                    <strong className="text-base">{calc.notStartedTasks}</strong> tasks
+                  </div>
+                </div>
+              </div>
+
+              {/* If no tasks: Callout to apply template */}
+              {!calc.hasTasks && (
+                <div className="p-5 bg-amber-50 border border-amber-200 rounded-xl text-center space-y-3">
+                  <AlertCircle className="w-8 h-8 text-amber-600 mx-auto" />
+                  <div>
+                    <h4 className="text-sm font-bold text-amber-950">No Construction Tasks Configured</h4>
+                    <p className="text-xs text-amber-800 max-w-md mx-auto mt-1">
+                      This project currently displays 0% because no milestone tasks are assigned. Apply the standard 15-stage blueprint template or manually add trade tasks.
+                    </p>
+                  </div>
+                  {canManageProjects && (
+                    <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                      <button
+                        onClick={() => applyProjectTemplate(inspectingProject.id, inspectingProject.type)}
+                        className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors shadow-xs"
+                      >
+                        <Sparkles className="w-4 h-4" />
+                        <span>Apply {inspectingProject.type} 15-Stage Template</span>
+                      </button>
+                      <button
+                        onClick={() => setQuickAddModalProject(inspectingProject)}
+                        className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors shadow-xs"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Add Custom Task</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Stage-by-Stage Construction Breakdown */}
+              {calc.hasTasks && calc.stagesBreakdown.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <Layers className="w-4 h-4 text-slate-600" />
+                      <span>Construction Stages Breakdown ({calc.stagesBreakdown.length} Active Stages)</span>
+                    </h4>
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span className="text-slate-500">Filter Stage:</span>
+                      <button
+                        onClick={() => setSelectedInspectStageId('all')}
+                        className={`px-2 py-0.5 rounded font-mono ${
+                          selectedInspectStageId === 'all'
+                            ? 'bg-slate-900 text-white font-bold'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        All
+                      </button>
+                      {calc.stagesBreakdown.map(s => (
+                        <button
+                          key={s.stageId}
+                          onClick={() => setSelectedInspectStageId(s.stageId)}
+                          className={`px-2 py-0.5 rounded font-mono ${
+                            selectedInspectStageId === s.stageId
+                              ? 'bg-amber-500 text-slate-950 font-bold'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                        >
+                          S{s.stageId}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    {calc.stagesBreakdown.map(stage => (
+                      <div
+                        key={stage.stageId}
+                        onClick={() => setSelectedInspectStageId(stage.stageId)}
+                        className={`p-3 rounded-lg border text-xs cursor-pointer transition-all ${
+                          selectedInspectStageId === stage.stageId
+                            ? 'bg-amber-50/80 border-amber-300 shadow-xs'
+                            : 'bg-white border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-1 mb-1.5">
+                          <span className="font-bold text-slate-900 truncate">
+                            Stage {stage.stageId}: {stage.stageName}
+                          </span>
+                          <span className="font-mono font-bold text-slate-700">
+                            {stage.stageProgress}%
+                          </span>
+                        </div>
+                        <ProgressBar progress={stage.stageProgress} showLabel={false} size="sm" />
+                        <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono mt-1.5">
+                          <span>{stage.completedTasks}/{stage.totalTasks} tasks</span>
+                          <span>Weight: {stage.stageWeight}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Linked Tasks Inspection & Real-Time Completion Controller */}
+              {calc.hasTasks && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <Sliders className="w-4 h-4 text-slate-600" />
+                      <span>Linked Tasks & Live Progress Controllers ({filteredTasksForModal.length})</span>
+                    </h4>
+                    <span className="text-[11px] text-slate-500">
+                      Adjusting task completion immediately updates project progress in real time
+                    </span>
+                  </div>
+
+                  <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100 bg-white">
+                    {filteredTasksForModal.map(task => {
+                      const eff = task.completionPercentage !== undefined
+                        ? task.completionPercentage
+                        : (task.status === 'Completed' ? 100 : task.status === 'In Progress' ? 50 : 0);
+
+                      return (
+                        <div key={task.id} className="p-3.5 hover:bg-slate-50/80 transition-colors space-y-2">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
+                                  Stage {task.stageId}
+                                </span>
+                                <span className="text-xs font-bold text-slate-900">{task.title}</span>
+                                <span className="text-[10px] font-mono text-slate-500">
+                                  (Weight: <strong>{task.weight}</strong>)
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">{task.description}</p>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                                task.status === 'Completed' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
+                                task.status === 'In Progress' ? 'bg-sky-50 text-sky-800 border border-sky-200' :
+                                task.status === 'Blocked' ? 'bg-rose-50 text-rose-800 border border-rose-200' :
+                                task.status === 'Awaiting Approval' ? 'bg-amber-50 text-amber-800 border border-amber-200' :
+                                'bg-slate-100 text-slate-700'
+                              }`}>
+                                {task.status}
+                              </span>
+
+                              <span className="font-mono text-xs font-bold text-slate-900 px-2 py-0.5 bg-slate-100 rounded">
+                                {eff}%
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Live Slider Controller for Task Completion */}
+                          {canManageProjects && (
+                            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+                              <div className="flex items-center gap-2 flex-1 min-w-[220px]">
+                                <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap">
+                                  Completion:
+                                </span>
+                                <input
+                                  type="range"
+                                  min="0"
+                                  max="100"
+                                  step="5"
+                                  value={eff}
+                                  onChange={(e) => {
+                                    const val = Number(e.target.value);
+                                    let newStatus: TaskStatus = task.status;
+                                    if (val === 100) newStatus = 'Completed';
+                                    else if (val > 0 && task.status === 'Not Started') newStatus = 'In Progress';
+                                    updateTask(task.id, {
+                                      completionPercentage: val,
+                                      status: newStatus
+                                    });
+                                  }}
+                                  className="flex-1 accent-amber-500 cursor-pointer h-1.5 bg-slate-200 rounded-lg"
+                                />
+                                <span className="font-mono text-xs font-semibold text-slate-700 w-10 text-right">
+                                  {eff}%
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => updateTask(task.id, { status: 'In Progress', completionPercentage: 50 })}
+                                  className="px-2 py-0.5 text-[10px] font-semibold text-sky-800 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded"
+                                >
+                                  In Progress (50%)
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateTask(task.id, { status: 'Completed', completionPercentage: 100 })}
+                                  className="px-2 py-0.5 text-[10px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded"
+                                >
+                                  Complete (100%)
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateTask(task.id, { status: 'Blocked', completionPercentage: eff, blockedReason: 'Civil / Material Dependency' })}
+                                  className="px-2 py-0.5 text-[10px] font-semibold text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded"
+                                >
+                                  Block
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-between items-center pt-3 border-t border-slate-200">
+                <div className="text-xs text-slate-500">
+                  Site Lead: <strong className="text-slate-800">{inspectingProject.projectManagerName}</strong> · Due: <span className="font-mono text-slate-700">{inspectingProject.plannedCompletionDate}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInspectingProject(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50"
+                >
+                  Close Inspection
+                </button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* Quick Add Tasks / Apply Template Modal */}
+      {quickAddModalProject && (
+        <Modal
+          isOpen={true}
+          onClose={() => setQuickAddModalProject(null)}
+          title={`Add Tasks to "${quickAddModalProject.name}"`}
+          subtitle={`${quickAddModalProject.code} · ${quickAddModalProject.type} at ${quickAddModalProject.location}`}
+          maxWidth="lg"
+        >
+          <div className="space-y-5">
+            {/* 1-Click Template Setup Option */}
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
+              <div className="flex items-center gap-2 text-amber-950 font-bold text-xs">
+                <Sparkles className="w-4 h-4 text-amber-600" />
+                <span>Instant Construction Stages & Tasks Template</span>
+              </div>
+              <p className="text-[11px] text-amber-800 leading-relaxed">
+                Automatically populate the complete 15-stage construction milestone blueprint tailored for {quickAddModalProject.type}. Progress will immediately become measured and dynamic.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  applyProjectTemplate(quickAddModalProject.id, quickAddModalProject.type);
+                  setQuickAddModalProject(null);
+                }}
+                className="w-full mt-1 px-4 py-2 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors shadow-xs"
+              >
+                Apply {quickAddModalProject.type} Template (15 Stages)
+              </button>
+            </div>
+
+            <div className="relative flex items-center justify-center">
+              <div className="border-t border-slate-200 w-full" />
+              <span className="bg-white px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider font-mono absolute">
+                Or Create Custom Task
+              </span>
+            </div>
+
+            {/* Custom Task Form */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!quickTaskTitle.trim()) return;
+                const stage = CONSTRUCTION_STAGES.find(s => s.id === quickTaskStageId) || CONSTRUCTION_STAGES[1];
+                addTask({
+                  title: quickTaskTitle.trim(),
+                  description: `Site milestone for ${stage.name}.`,
+                  stageId: quickTaskStageId,
+                  stageName: stage.name,
+                  activityId: 'ACT-CUSTOM',
+                  projectId: quickAddModalProject.id,
+                  propertyId: 'PROJECT_CORE',
+                  unitNumber: 'Site Milestone',
+                  assignedTo: quickAddModalProject.projectManagerName,
+                  plannedStartDate: quickAddModalProject.startDate,
+                  plannedFinishDate: quickAddModalProject.plannedCompletionDate,
+                  status: quickTaskStatus,
+                  completionPercentage: quickTaskCompletion,
+                  priority: 'High',
+                  dependencies: [],
+                  weight: quickTaskWeight
+                });
+                setQuickAddModalProject(null);
+                setQuickTaskTitle('');
+              }}
+              className="space-y-3.5"
+            >
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Task Milestone Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={quickTaskTitle}
+                  onChange={(e) => setQuickTaskTitle(e.target.value)}
+                  placeholder="e.g. Raft excavation and anti-termite treatment"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-1 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Construction Stage
+                  </label>
+                  <select
+                    value={quickTaskStageId}
+                    onChange={(e) => setQuickTaskStageId(Number(e.target.value))}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+                  >
+                    {CONSTRUCTION_STAGES.map(s => (
+                      <option key={s.id} value={s.id}>
+                        Stage {s.id}: {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Task Weight (1 - 10)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={quickTaskWeight}
+                    onChange={(e) => setQuickTaskWeight(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Task Status
+                  </label>
+                  <select
+                    value={quickTaskStatus}
+                    onChange={(e) => {
+                      const st = e.target.value as TaskStatus;
+                      setQuickTaskStatus(st);
+                      if (st === 'Completed') setQuickTaskCompletion(100);
+                      else if (st === 'Not Started' || st === 'Blocked') setQuickTaskCompletion(0);
+                      else setQuickTaskCompletion(50);
+                    }}
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+                  >
+                    <option value="Not Started">Not Started</option>
+                    <option value="In Progress">In Progress</option>
+                    <option value="Blocked">Blocked</option>
+                    <option value="Completed">Completed</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Completion Percentage ({quickTaskCompletion}%)
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={quickTaskCompletion}
+                    onChange={(e) => setQuickTaskCompletion(Number(e.target.value))}
+                    className="w-full accent-amber-500 mt-2"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setQuickAddModalProject(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800"
+                >
+                  Create & Calculate Progress
+                </button>
+              </div>
+            </form>
+          </div>
+        </Modal>
+      )}
 
       {/* Delete Confirmation */}
       <ConfirmDialog

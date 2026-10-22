@@ -120,6 +120,7 @@ function MainApp() {
               setSelectedProjectId(id);
               setCurrentView('buildings');
             }}
+            initialInspectingProjectId={currentView === 'project-detail' ? selectedProjectId : undefined}
           />
         );
       case 'buildings':
