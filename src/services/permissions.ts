@@ -1,4 +1,4 @@
-import { UserRole, UserProfile, ConstructionProject, Property } from '../types';
+import { UserRole, UserProfile, ConstructionProject, Property, CustomizationRequest } from '../types';
 
 export const ROLE_ALLOWED_VIEWS: Record<UserRole, string[]> = {
   admin: [
@@ -170,8 +170,11 @@ export function getScopedProperties(user: UserProfile, allProperties: Property[]
   if (!user || user.role === 'admin') return allProperties;
 
   if (user.role === 'customer') {
-    const targetPropertyId = user.assignedPropertyId || 'PROP-EH-A301';
-    return allProperties.filter(p => p.id === targetPropertyId || p.customerId === user.id);
+    return allProperties.filter(p => 
+      (user.assignedPropertyId && p.id === user.assignedPropertyId) || 
+      p.customerId === user.id ||
+      (user.email && p.customerEmail?.toLowerCase() === user.email.toLowerCase())
+    );
   }
 
   const assignedSet = new Set(user.assignedProjectIds || []);
@@ -191,6 +194,33 @@ export function getScopedProperties(user: UserProfile, allProperties: Property[]
   }
 
   return allProperties;
+}
+
+/**
+ * Filter customization requests strictly according to user role and customer ownership
+ */
+export function getScopedCustomizations(
+  user: UserProfile, 
+  allCustomizations: CustomizationRequest[], 
+  allProperties: Property[], 
+  allProjects?: ConstructionProject[]
+): CustomizationRequest[] {
+  if (!user) return [];
+  if (user.role === 'admin') return allCustomizations;
+
+  if (user.role === 'customer') {
+    const customerProps = getScopedProperties(user, allProperties, allProjects);
+    const customerPropIds = new Set(customerProps.map(p => p.id));
+    return allCustomizations.filter(c => 
+      (c.customerId === user.id) ||
+      (user.assignedPropertyId && c.propertyId === user.assignedPropertyId) ||
+      customerPropIds.has(c.propertyId)
+    );
+  }
+
+  const scopedProps = getScopedProperties(user, allProperties, allProjects);
+  const scopedPropIds = new Set(scopedProps.map(p => p.id));
+  return allCustomizations.filter(c => scopedPropIds.has(c.propertyId));
 }
 
 /**

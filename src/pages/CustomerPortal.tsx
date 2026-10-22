@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useData } from '../context/DataContext';
 import { useAuth } from '../context/AuthContext';
 import { STANDARD_ACTIVITIES, PACKAGE_DEFINITIONS } from '../constants/constructionData';
 import { calculatePropertyDeliveryForecast } from '../services/estimationEngine';
 import { ProgressBar } from '../components/common/ProgressBar';
-import { PropertyStatusBadge, PackageBadge, TaskStatusBadge } from '../components/common/Badge';
+import { PropertyStatusBadge, PackageBadge, TaskStatusBadge, CustomizationStatusBadge } from '../components/common/Badge';
 import { Modal } from '../components/common/Modal';
+import { CustomizationRequest } from '../types';
 import { 
   Home, 
   Calendar, 
@@ -26,9 +27,10 @@ import {
   LogOut,
   MapPin,
   Layers,
-  Building
+  Building,
+  AlertCircle
 } from 'lucide-react';
-import { differenceInCalendarDays, parseISO } from 'date-fns';
+import { differenceInCalendarDays, parseISO, addDays, format } from 'date-fns';
 
 interface CustomerPortalProps {
   onNavigate: (view: string, id?: string) => void;
@@ -38,22 +40,64 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ onNavigate }) =>
   const { properties, projects, tasks, customizations, photos, handovers, submitCustomization, customerDecisionCustomization } = useData();
   const { currentUser, role, logout } = useAuth();
 
-  // Find customer's assigned property (default to Flat A-301 if not customer role or test preview)
-  const targetPropertyId = currentUser.assignedPropertyId || 'PROP-EH-A301';
-  const property = properties.find(p => p.id === targetPropertyId) || properties[0];
+  // Find customer's assigned property strictly for the authenticated customer account (Requirement 1 & 4)
+  const property = useMemo(() => {
+    if (currentUser.role === 'customer') {
+      return properties.find(p => 
+        (currentUser.assignedPropertyId && p.id === currentUser.assignedPropertyId) ||
+        p.customerId === currentUser.id ||
+        (currentUser.email && p.customerEmail?.toLowerCase() === currentUser.email.toLowerCase())
+      ) || null;
+    }
+    // Admin / Project Manager preview mode
+    const targetPropertyId = currentUser.assignedPropertyId || 'PROP-EH-A301';
+    return properties.find(p => p.id === targetPropertyId) || properties[0] || null;
+  }, [currentUser, properties]);
 
-  const propTasks = tasks.filter(t => t.propertyId === property?.id);
-  const propCustomizations = customizations.filter(c => c.propertyId === property?.id);
-  const propPhotos = photos.filter(ph => ph.propertyId === property?.id);
-  const propHandover = handovers.find(h => h.propertyId === property?.id);
+  const propTasks = useMemo(() => {
+    if (!property) return [];
+    return tasks.filter(t => t.propertyId === property.id);
+  }, [tasks, property]);
 
-  const site = projects.find(pr => pr.id === property?.projectId);
+  // Strictly filter customizations belonging ONLY to this authenticated customer and their assigned property (Requirement 1)
+  const propCustomizations = useMemo(() => {
+    if (!property) return [];
+    return customizations.filter(c => {
+      // Must match property ID
+      if (c.propertyId !== property.id) return false;
+      // If customer role, ensure customer ownership
+      if (currentUser.role === 'customer') {
+        return c.customerId === currentUser.id || c.customerId === property.customerId || c.customerName === property.customerName;
+      }
+      return true;
+    });
+  }, [customizations, property, currentUser]);
+
+  const pendingProposals = useMemo(() => {
+    return propCustomizations.filter(c => c.status === 'Awaiting Customer Approval');
+  }, [propCustomizations]);
+
+  const propPhotos = useMemo(() => {
+    if (!property) return [];
+    return photos.filter(ph => ph.propertyId === property.id);
+  }, [photos, property]);
+
+  const propHandover = useMemo(() => {
+    if (!property) return undefined;
+    return handovers.find(h => h.propertyId === property.id);
+  }, [handovers, property]);
+
+  const site = useMemo(() => {
+    if (!property) return undefined;
+    return projects.find(pr => pr.id === property.projectId);
+  }, [projects, property]);
+
   const stateName = property?.state || site?.state || 'Tamil Nadu';
   const cityName = property?.city || site?.city || 'Chennai';
   const localityName = property?.locality || site?.locality || 'OMR';
   const siteName = property?.siteName || site?.name || property?.projectName;
 
-  const forecast = property ? calculatePropertyDeliveryForecast(property, propTasks, customizations) : null;
+  const forecast = property ? calculatePropertyDeliveryForecast(property, propTasks, propCustomizations) : null;
 
   // Customization Request Form State
   const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
@@ -61,10 +105,32 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ onNavigate }) =>
   const [reqTitle, setReqTitle] = useState('');
   const [reqDesc, setReqDesc] = useState('');
 
+  // Confirmation Modal States (Requirement 2: Require confirmation before approval/rejection)
+  const [confirmingApprovalReq, setConfirmingApprovalReq] = useState<CustomizationRequest | null>(null);
+  const [confirmingDeclineReq, setConfirmingDeclineReq] = useState<CustomizationRequest | null>(null);
+  const [declineRemarks, setDeclineRemarks] = useState('');
+  const [isActionProcessing, setIsActionProcessing] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
+
   if (!property || !forecast) {
     return (
-      <div className="text-center py-16 text-slate-500">
-        No assigned property found.
+      <div className="min-h-[500px] flex items-center justify-center p-6">
+        <div className="text-center py-12 bg-white rounded-2xl border border-slate-200 p-8 shadow-xs max-w-md mx-auto space-y-4">
+          <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto text-slate-500">
+            <Building className="w-6 h-6" />
+          </div>
+          <h2 className="text-base font-bold text-slate-900">No Property Unit Assigned</h2>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Your customer profile (<strong className="text-slate-800">{currentUser.name}</strong>) is authenticated, but no active property is currently assigned. Please contact your ArthiBuild Project Manager.
+          </p>
+          <button
+            onClick={logout}
+            className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+          >
+            Sign Out
+          </button>
+        </div>
       </div>
     );
   }
@@ -92,6 +158,34 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ onNavigate }) =>
     setIsRequestModalOpen(false);
     setReqTitle('');
     setReqDesc('');
+    setActionSuccessMessage('Your customization request has been submitted to the Project Manager for technical and cost formulation.');
+    setTimeout(() => setActionSuccessMessage(null), 5000);
+  };
+
+  const handleExecuteDecision = (reqId: string, decision: 'Approved' | 'Rejected', remarks?: string) => {
+    setIsActionProcessing(true);
+    setActionError(null);
+
+    const result = customerDecisionCustomization(reqId, decision, remarks, currentUser);
+    setIsActionProcessing(false);
+
+    if (result && !result.success) {
+      setActionError(result.error || 'Failed to process request.');
+      return;
+    }
+
+    setConfirmingApprovalReq(null);
+    setConfirmingDeclineReq(null);
+    setDeclineRemarks('');
+    setActionSuccessMessage(
+      decision === 'Approved'
+        ? 'Customization approved! Your delivery schedule and tracking roadmap have been updated.'
+        : 'Proposal declined. Customization marked as rejected without schedule impact.'
+    );
+
+    setTimeout(() => {
+      setActionSuccessMessage(null);
+    }, 5000);
   };
 
   return (
@@ -278,8 +372,24 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ onNavigate }) =>
         </div>
       )}
 
-      {/* Pending Proposals Needing Customer Action */}
-      {propCustomizations.filter(c => c.status === 'Awaiting Customer Approval').map(req => (
+      {/* Action Feedback Messages */}
+      {actionSuccessMessage && (
+        <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-xl text-xs text-emerald-900 flex items-center justify-between shadow-2xs animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+            <span className="font-medium">{actionSuccessMessage}</span>
+          </div>
+          <button 
+            onClick={() => setActionSuccessMessage(null)}
+            className="text-emerald-700 hover:text-emerald-900 font-bold px-2 py-0.5"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Pending Proposals Needing Customer Action (Requirement 1: Hide if none pending) */}
+      {pendingProposals.map(req => (
         <div key={req.id} className="p-5 bg-amber-50 border-2 border-amber-300 rounded-2xl shadow-sm space-y-3">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -299,6 +409,8 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ onNavigate }) =>
               <span>Quoted Cost: <strong className="text-slate-900 text-sm">₹{req.estimatedCost.toLocaleString()}</strong></span>
               <span>·</span>
               <span>Timeline Impact: <strong className="text-rose-600 font-bold">+{req.scheduleImpactDays} days</strong></span>
+              <span>·</span>
+              <span className="text-slate-500 font-sans">Applies solely to {property.unitNumber}</span>
             </div>
             {req.managerRemarks && (
               <p className="text-slate-600 text-[11px] leading-relaxed">
@@ -309,14 +421,20 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ onNavigate }) =>
 
           <div className="flex items-center justify-end gap-3 pt-1">
             <button
-              onClick={() => customerDecisionCustomization(req.id, 'Rejected', 'Customer declined quotation proposal.')}
-              className="px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-800 bg-white border border-slate-200 rounded-lg"
+              onClick={() => {
+                setActionError(null);
+                setConfirmingDeclineReq(req);
+              }}
+              className="px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer"
             >
               Decline Proposal
             </button>
             <button
-              onClick={() => customerDecisionCustomization(req.id, 'Approved', 'Quotation and schedule impact accepted.')}
-              className="px-4 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm flex items-center gap-1.5"
+              onClick={() => {
+                setActionError(null);
+                setConfirmingApprovalReq(req);
+              }}
+              className="px-4 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm flex items-center gap-1.5 transition-colors cursor-pointer"
             >
               <Check className="w-4 h-4 text-emerald-400" />
               <span>Approve & Update Delivery Schedule</span>
@@ -464,6 +582,217 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ onNavigate }) =>
         </div>
       </div>
 
+      {/* Customer's Customizations History & Upgrade Dossier */}
+      <div className="bg-white rounded-xl border border-slate-200/90 p-5 shadow-xs space-y-4">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+              <Sliders className="w-4 h-4 text-purple-600" />
+              <span>Your Customization Requests & Upgrades</span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Personalized finishes and bespoke architectural changes for {property.unitNumber}
+            </p>
+          </div>
+          <button
+            onClick={() => setIsRequestModalOpen(true)}
+            className="px-3 py-1.5 text-xs font-semibold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors flex items-center gap-1 shadow-2xs cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>New Request</span>
+          </button>
+        </div>
+
+        {propCustomizations.length === 0 ? (
+          <div className="text-center py-10 bg-slate-50/50 rounded-xl border border-slate-200/60 p-6 space-y-2">
+            <Sliders className="w-8 h-8 text-slate-300 mx-auto" />
+            <div className="text-xs font-bold text-slate-700">No Customization Requests Submitted</div>
+            <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
+              You are currently on standard specification. If you wish to upgrade tiles, add electrical points, or modify kitchen layout, click &quot;New Request&quot;.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {propCustomizations.map(req => (
+              <div 
+                key={req.id} 
+                className="p-4 rounded-xl border border-slate-200/90 bg-slate-50/40 hover:bg-slate-50 transition-colors space-y-2.5"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-purple-100 text-purple-800">
+                        {req.category}
+                      </span>
+                      <span className="font-mono text-[10px] text-slate-400">{req.id}</span>
+                      <span className="text-[11px] text-slate-400 font-mono">· {req.requestDate}</span>
+                    </div>
+                    <h3 className="text-xs font-bold text-slate-900 mt-1">{req.title}</h3>
+                    <p className="text-xs text-slate-600 mt-0.5">{req.description}</p>
+                  </div>
+                  <div className="shrink-0">
+                    <CustomizationStatusBadge status={req.status} />
+                  </div>
+                </div>
+
+                {(req.estimatedCost > 0 || req.managerRemarks || req.customerRemarks) && (
+                  <div className="p-2.5 bg-white rounded-lg border border-slate-200 text-xs space-y-1.5 font-mono">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span>Quoted: <strong className="text-slate-900">₹{req.estimatedCost.toLocaleString()}</strong></span>
+                      <span>·</span>
+                      <span>Schedule: <strong className={req.scheduleImpactDays > 0 ? 'text-rose-600' : 'text-slate-600'}>+{req.scheduleImpactDays} days</strong></span>
+                      {req.appliedToSchedule && (
+                        <span className="text-emerald-700 font-sans font-semibold">✓ Applied to {property.unitNumber} delivery forecast</span>
+                      )}
+                    </div>
+                    {req.managerRemarks && (
+                      <div className="font-sans text-[11px] text-slate-600 pt-1 border-t border-slate-100">
+                        <strong>PM Remarks:</strong> {req.managerRemarks}
+                      </div>
+                    )}
+                    {req.customerRemarks && (
+                      <div className="font-sans text-[11px] text-slate-700 bg-slate-50 p-1.5 rounded">
+                        <strong>Your Decision Remarks:</strong> {req.customerRemarks}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Confirmation Modal: Approval (Requirement 2: Require confirmation before approving cost/schedule changes) */}
+      <Modal
+        isOpen={!!confirmingApprovalReq}
+        onClose={() => { if (!isActionProcessing) setConfirmingApprovalReq(null); }}
+        title="Confirm Customization Approval"
+        subtitle={`Proposal ${confirmingApprovalReq?.id} · Unit ${property.unitNumber}`}
+        maxWidth="md"
+      >
+        {confirmingApprovalReq && (
+          <div className="space-y-4 text-xs">
+            <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl space-y-1.5">
+              <div className="font-bold text-amber-950 text-sm">{confirmingApprovalReq.title}</div>
+              <div className="text-slate-600 leading-relaxed text-[11px]">{confirmingApprovalReq.description}</div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 p-3.5 bg-slate-50 border border-slate-200 rounded-xl font-mono">
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase">Quoted Extra Cost</span>
+                <span className="text-base font-bold text-slate-900">₹{confirmingApprovalReq.estimatedCost.toLocaleString()}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase">Timeline Impact</span>
+                <span className="text-base font-bold text-rose-600">+{confirmingApprovalReq.scheduleImpactDays} Days</span>
+              </div>
+              <div className="pt-2 border-t border-slate-200">
+                <span className="text-slate-400 block text-[10px] uppercase">Current Estimated Date</span>
+                <span className="text-xs font-semibold text-slate-700">{property.currentEstimatedDate}</span>
+              </div>
+              <div className="pt-2 border-t border-slate-200">
+                <span className="text-slate-400 block text-[10px] uppercase">New Target Delivery Date</span>
+                <span className="text-xs font-bold text-amber-700">
+                  {format(addDays(parseISO(property.currentEstimatedDate), confirmingApprovalReq.scheduleImpactDays), 'yyyy-MM-dd')}
+                </span>
+              </div>
+            </div>
+
+            {actionError && (
+              <div className="p-3 bg-rose-50 border border-rose-300 rounded-lg text-rose-800 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{actionError}</span>
+              </div>
+            )}
+
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 text-[11px] leading-relaxed">
+              <strong>Property Isolation Notice:</strong> By authorizing this approval, you accept the quoted ₹{confirmingApprovalReq.estimatedCost.toLocaleString()} cost and the +{confirmingApprovalReq.scheduleImpactDays}-day timeline impact for <strong>{property.unitNumber} only</strong>. Other units or residences in {property.projectName} remain completely unaffected.
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isActionProcessing}
+                onClick={() => setConfirmingApprovalReq(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isActionProcessing}
+                onClick={() => handleExecuteDecision(confirmingApprovalReq.id, 'Approved')}
+                className="px-4 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {isActionProcessing ? 'Updating Schedule...' : 'Confirm & Authorize Schedule Update'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Confirmation Modal: Decline (Requirement 2) */}
+      <Modal
+        isOpen={!!confirmingDeclineReq}
+        onClose={() => { if (!isActionProcessing) setConfirmingDeclineReq(null); }}
+        title="Decline Customization Proposal"
+        subtitle={`Proposal ${confirmingDeclineReq?.id} · Unit ${property.unitNumber}`}
+        maxWidth="md"
+      >
+        {confirmingDeclineReq && (
+          <div className="space-y-4 text-xs">
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+              <div className="font-bold text-slate-900 text-sm">{confirmingDeclineReq.title}</div>
+              <div className="text-slate-600 leading-relaxed text-[11px]">{confirmingDeclineReq.description}</div>
+            </div>
+
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs leading-relaxed">
+              Declining this proposal will mark the request as <strong>Rejected</strong>. Your original delivery schedule ({property.currentEstimatedDate}) and standard contract scope will remain intact without changes.
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Reason for Declining (Optional)
+              </label>
+              <input
+                type="text"
+                value={declineRemarks}
+                onChange={(e) => setDeclineRemarks(e.target.value)}
+                placeholder="e.g. Budget constraint or decided to keep standard specification"
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+              />
+            </div>
+
+            {actionError && (
+              <div className="p-3 bg-rose-50 border border-rose-300 rounded-lg text-rose-800 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{actionError}</span>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isActionProcessing}
+                onClick={() => setConfirmingDeclineReq(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isActionProcessing}
+                onClick={() => handleExecuteDecision(confirmingDeclineReq.id, 'Rejected', declineRemarks)}
+                className="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow-sm disabled:opacity-50 cursor-pointer"
+              >
+                {isActionProcessing ? 'Declining...' : 'Confirm Rejection'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       {/* Submit Customization Modal */}
       <Modal
         isOpen={isRequestModalOpen}
@@ -524,13 +853,13 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ onNavigate }) =>
             <button
               type="button"
               onClick={() => setIsRequestModalOpen(false)}
-              className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50"
+              className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 shadow-xs"
+              className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 shadow-xs cursor-pointer"
             >
               Submit to Project Manager
             </button>

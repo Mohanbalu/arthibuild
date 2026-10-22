@@ -65,7 +65,7 @@ interface DataContextType {
   // Customization Workflow
   submitCustomization: (request: Omit<CustomizationRequest, 'id' | 'requestDate' | 'status' | 'appliedToSchedule'>) => void;
   reviewCustomization: (id: string, estimatedCost: number, scheduleImpactDays: number, managerRemarks: string, reviewerName: string) => void;
-  customerDecisionCustomization: (id: string, decision: 'Approved' | 'Rejected', customerRemarks: string) => void;
+  customerDecisionCustomization: (id: string, decision: 'Approved' | 'Rejected', customerRemarks?: string, callingUser?: UserProfile) => { success: boolean; error?: string };
 
   // Quality Inspection
   createInspection: (inspection: Omit<QualityInspection, 'id' | 'status' | 'items'>, itemTitles?: string[]) => QualityInspection;
@@ -640,26 +640,60 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const customerDecisionCustomization = (
     id: string, 
     decision: 'Approved' | 'Rejected', 
-    customerRemarks: string
-  ) => {
+    customerRemarks: string = '',
+    callingUser?: UserProfile
+  ): { success: boolean; error?: string } => {
     const req = customizations.find(r => r.id === id);
-    if (!req) return;
+    if (!req) {
+      return { success: false, error: `Customization request ${id} not found.` };
+    }
+
+    // Data-layer role and ownership validation (Requirement 4)
+    if (callingUser && callingUser.role === 'customer') {
+      const isOwner = req.customerId === callingUser.id || 
+                      (callingUser.assignedPropertyId && req.propertyId === callingUser.assignedPropertyId);
+      if (!isOwner) {
+        return { 
+          success: false, 
+          error: 'Access Denied: You are not authorized to decide on customization proposals for another customer.' 
+        };
+      }
+    }
+
+    // Prevent repeated submissions and duplicate approval actions (Requirement 2)
+    if (req.status === 'Approved' || req.status === 'Rejected') {
+      return { 
+        success: false, 
+        error: `Action prevented: Request ${req.id} has already been ${req.status.toLowerCase()}. Duplicate decisions are prohibited.` 
+      };
+    }
+
+    if (req.status !== 'Awaiting Customer Approval') {
+      return { 
+        success: false, 
+        error: `Action prevented: Request ${req.id} is currently '${req.status}' and not awaiting customer approval.` 
+      };
+    }
 
     const property = properties.find(p => p.id === req.propertyId);
+    if (!property) {
+      return { success: false, error: `Associated property ${req.propertyId} not found.` };
+    }
 
+    // Update ONLY the selected request ID (Requirement 2)
     setCustomizations(prev => prev.map(r => {
       if (r.id !== id) return r;
       return {
         ...r,
         status: decision,
         customerApprovedAt: decision === 'Approved' ? format(new Date(), 'yyyy-MM-dd') : undefined,
-        customerRemarks,
+        customerRemarks: customerRemarks || (decision === 'Approved' ? 'Quotation and schedule impact accepted.' : 'Customer declined quotation proposal.'),
         appliedToSchedule: decision === 'Approved'
       };
     }));
 
-    if (decision === 'Approved' && property) {
-      // Automatically adjust property delivery forecast and log change
+    if (decision === 'Approved') {
+      // Apply the schedule impact ONLY to the property associated with the approved request (Requirement 3)
       const prevDate = property.currentEstimatedDate;
       const newEstimatedDate = format(
         addDays(parseISO(prevDate), req.scheduleImpactDays),
@@ -679,7 +713,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       setForecastLogs(prev => [newLog, ...prev]);
 
-      // Update property
+      // Update ONLY THIS property. Other units and properties in the project are completely unaffected!
       setProperties(prev => prev.map(p => {
         if (p.id !== property.id) return p;
         return {
@@ -717,22 +751,25 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       addNotification({
         title: 'Customization Approved & Schedule Updated',
-        message: `${req.customerName} approved customization "${req.title}". Schedule adjusted by +${req.scheduleImpactDays} days. New delivery target: ${newEstimatedDate}.`,
+        message: `${req.customerName} approved customization "${req.title}". Schedule for ${property.unitNumber} adjusted by +${req.scheduleImpactDays} days. New delivery target: ${newEstimatedDate}.`,
         category: 'customization',
         targetRoles: ['admin', 'project_manager', 'site_coordinator'],
         propertyId: req.propertyId,
         projectId: req.projectId
       });
     } else {
+      // Rejection: Update only request status. Do not apply schedule changes to property.
       addNotification({
         title: 'Customization Proposal Declined',
-        message: `${req.customerName} declined proposal for "${req.title}". No schedule adjustment applied.`,
+        message: `${req.customerName} declined proposal for "${req.title}". No schedule adjustment applied to ${property.unitNumber}.`,
         category: 'customization',
         targetRoles: ['admin', 'project_manager'],
         propertyId: req.propertyId,
         projectId: req.projectId
       });
     }
+
+    return { success: true };
   };
 
   // Quality Inspection

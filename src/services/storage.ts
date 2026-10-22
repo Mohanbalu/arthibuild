@@ -76,8 +76,15 @@ export const StorageService = {
     if (!localStorage.getItem(STORAGE_KEYS.PHOTOS)) {
       safeSet(STORAGE_KEYS.PHOTOS, INITIAL_PHOTOS);
     }
-    if (!localStorage.getItem(STORAGE_KEYS.CUSTOMIZATIONS)) {
+    const storedCustomizations = safeGet<CustomizationRequest[]>(STORAGE_KEYS.CUSTOMIZATIONS, []);
+    const hasReq3WithCust2 = storedCustomizations.some(c => c.id === 'REQ-CUST-003' && c.customerId === 'usr-cust-2');
+    if (!storedCustomizations || storedCustomizations.length === 0 || !hasReq3WithCust2) {
       safeSet(STORAGE_KEYS.CUSTOMIZATIONS, INITIAL_CUSTOMIZATIONS);
+    }
+    const storedProps = safeGet<Property[]>(STORAGE_KEYS.PROPERTIES, []);
+    const hasVillaCust2 = storedProps.some(p => p.id === 'PROP-GV-V01' && p.customerId === 'usr-cust-2');
+    if (!hasVillaCust2) {
+      safeSet(STORAGE_KEYS.PROPERTIES, INITIAL_PROPERTIES);
     }
     if (!localStorage.getItem(STORAGE_KEYS.INSPECTIONS)) {
       safeSet(STORAGE_KEYS.INSPECTIONS, INITIAL_INSPECTIONS);

@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useData } from '../context/DataContext';
 import { useAuth } from '../context/AuthContext';
 import { CustomizationRequest, CustomizationCategory, CustomizationStatus } from '../types';
-import { getScopedProperties, getScopedProjects } from '../services/permissions';
+import { getScopedProperties, getScopedProjects, getScopedCustomizations } from '../services/permissions';
 import { Modal } from '../components/common/Modal';
 import { CustomizationStatusBadge } from '../components/common/Badge';
 import { 
@@ -20,6 +20,7 @@ import {
   AlertCircle,
   Sparkles
 } from 'lucide-react';
+import { format, parseISO, addDays } from 'date-fns';
 
 interface CustomizationRequestsProps {
   onNavigate: (view: string, id?: string) => void;
@@ -48,6 +49,14 @@ export const CustomizationRequests: React.FC<CustomizationRequestsProps> = ({ on
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
   const [reviewingRequest, setReviewingRequest] = useState<CustomizationRequest | null>(null);
 
+  // Customer Decision Confirmation Modals
+  const [confirmingApprovalReq, setConfirmingApprovalReq] = useState<CustomizationRequest | null>(null);
+  const [confirmingDeclineReq, setConfirmingDeclineReq] = useState<CustomizationRequest | null>(null);
+  const [declineRemarks, setDeclineRemarks] = useState('');
+  const [isActionProcessing, setIsActionProcessing] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
+
   // New Request Form
   const [formPropertyId, setFormPropertyId] = useState(
     isCustomer && currentUser.assignedPropertyId ? currentUser.assignedPropertyId : (scopedProperties[0]?.id || '')
@@ -65,12 +74,12 @@ export const CustomizationRequests: React.FC<CustomizationRequestsProps> = ({ on
     'Flooring', 'Painting', 'Lighting', 'Electrical Points', 'Kitchen', 'Bathroom Fixtures', 'Interior Design', 'Other'
   ];
 
-  // Filter requests scoped by user's assigned properties
-  const filteredRequests = customizations.filter(req => {
-    // Only show requests for properties within user's role scope
-    if (!scopedPropertyIds.has(req.propertyId)) {
-      return false;
-    }
+  // Strictly filter requests scoped by user's authorized role and property ownership (Requirement 1 & 4)
+  const scopedRequests = useMemo(() => {
+    return getScopedCustomizations(currentUser, customizations, properties, projects);
+  }, [currentUser, customizations, properties, projects]);
+
+  const filteredRequests = scopedRequests.filter(req => {
     const matchesStatus = selectedStatus === 'all' || req.status === selectedStatus;
     const matchesCategory = selectedCategory === 'all' || req.category === selectedCategory;
     const matchesSearch = req.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -99,6 +108,32 @@ export const CustomizationRequests: React.FC<CustomizationRequestsProps> = ({ on
     );
 
     setReviewingRequest(null);
+  };
+
+  const handleExecuteDecision = (reqId: string, decision: 'Approved' | 'Rejected', remarks?: string) => {
+    setIsActionProcessing(true);
+    setActionError(null);
+
+    const result = customerDecisionCustomization(reqId, decision, remarks, currentUser);
+    setIsActionProcessing(false);
+
+    if (result && !result.success) {
+      setActionError(result.error || 'Failed to process request.');
+      return;
+    }
+
+    setConfirmingApprovalReq(null);
+    setConfirmingDeclineReq(null);
+    setDeclineRemarks('');
+    setActionSuccessMessage(
+      decision === 'Approved'
+        ? `Customization request ${reqId} approved! Delivery schedule and tasks have been updated.`
+        : `Customization request ${reqId} declined. Marked as rejected without schedule impact.`
+    );
+
+    setTimeout(() => {
+      setActionSuccessMessage(null);
+    }, 5000);
   };
 
   const handleSubmitNewRequest = (e: React.FormEvent) => {
@@ -160,6 +195,27 @@ export const CustomizationRequests: React.FC<CustomizationRequestsProps> = ({ on
           Submitting a customization request does <em>not</em> modify contractual delivery or scope immediately. The Project Manager must first formulate the quotation and schedule impact. Only upon customer authorization is the new timeline appended to the delivery forecast engine.
         </p>
       </div>
+
+      {/* Action Notifications */}
+      {actionSuccessMessage && (
+        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-center justify-between animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{actionSuccessMessage}</span>
+          </div>
+          <button onClick={() => setActionSuccessMessage(null)} className="text-emerald-600 hover:text-emerald-900 font-bold ml-2">×</button>
+        </div>
+      )}
+
+      {actionError && (
+        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{actionError}</span>
+          </div>
+          <button onClick={() => setActionError(null)} className="text-rose-600 hover:text-rose-900 font-bold ml-2">×</button>
+        </div>
+      )}
 
       {/* Filter and Search Bar */}
       <div className="bg-white p-3.5 rounded-xl border border-slate-200/90 shadow-2xs flex flex-wrap gap-3 items-center justify-between">
@@ -311,23 +367,36 @@ export const CustomizationRequests: React.FC<CustomizationRequestsProps> = ({ on
                     )}
 
                     {/* Customer Action (or testing as PM/Admin): Approve or Reject proposal */}
-                    {isAwaitingBuyer && (
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => customerDecisionCustomization(req.id, 'Approved', 'Quotation and schedule impact accepted.')}
-                          className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs flex items-center gap-1"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                          <span>Approve Proposal (+{req.scheduleImpactDays}d)</span>
-                        </button>
-                        <button
-                          onClick={() => customerDecisionCustomization(req.id, 'Rejected', 'Customer declined quotation.')}
-                          className="px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors"
-                        >
-                          Decline
-                        </button>
-                      </div>
-                    )}
+                    {isAwaitingBuyer && (() => {
+                      const canDecideThis = 
+                        (!isCustomer && (currentUser.role === 'admin' || currentUser.role === 'project_manager')) ||
+                        (isCustomer && (req.customerId === currentUser.id || req.propertyId === currentUser.assignedPropertyId));
+
+                      return canDecideThis ? (
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setConfirmingApprovalReq(req)}
+                            className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs flex items-center gap-1 cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Approve (+{req.scheduleImpactDays}d)</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              setConfirmingDeclineReq(req);
+                              setDeclineRemarks('');
+                            }}
+                            className="px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                          >
+                            Decline
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-[11px] font-mono text-amber-700 bg-amber-50 px-2 py-1 rounded border border-amber-200">
+                          Awaiting authorization ({req.customerName})
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
@@ -500,6 +569,127 @@ export const CustomizationRequests: React.FC<CustomizationRequestsProps> = ({ on
           </div>
         </form>
       </Modal>
+
+      {/* Customer Approval Confirmation Modal */}
+      {confirmingApprovalReq && (
+        <Modal
+          isOpen={true}
+          onClose={() => !isActionProcessing && setConfirmingApprovalReq(null)}
+          title="Confirm Customization Approval"
+          subtitle={`Request #${confirmingApprovalReq.id} - ${confirmingApprovalReq.unitNumber}`}
+          maxWidth="md"
+        >
+          <div className="space-y-4">
+            <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-2">
+              <div className="flex items-center gap-1.5 font-bold text-amber-950">
+                <AlertCircle className="w-4 h-4 text-amber-600" />
+                <span>Binding Schedule & Cost Revision Notice</span>
+              </div>
+              <p className="text-[11px] text-amber-800 leading-relaxed">
+                Approving this proposal will officially authorize the work, add the quoted cost to this unit's ledger, and extend the delivery forecast by <strong>+{confirmingApprovalReq.scheduleImpactDays} days</strong>.
+              </p>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5 text-xs">
+              <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                <span className="text-slate-500">Proposal Title:</span>
+                <span className="font-semibold text-slate-900 text-right">{confirmingApprovalReq.title}</span>
+              </div>
+              <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                <span className="text-slate-500">Target Property Unit:</span>
+                <span className="font-mono font-semibold text-slate-800">{confirmingApprovalReq.unitNumber}</span>
+              </div>
+              <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                <span className="text-slate-500">Quoted Additional Cost:</span>
+                <span className="font-bold text-slate-900 font-mono text-sm">
+                  ₹{confirmingApprovalReq.estimatedCost.toLocaleString()}
+                </span>
+              </div>
+              <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                <span className="text-slate-500">Schedule Impact:</span>
+                <span className="font-bold text-rose-600 font-mono">
+                  +{confirmingApprovalReq.scheduleImpactDays} days
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 pt-1">
+                <em>Note: This schedule adjustment applies strictly to <strong>{confirmingApprovalReq.unitNumber}</strong> and will not affect any other units or customers in the project.</em>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isActionProcessing}
+                onClick={() => setConfirmingApprovalReq(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 bg-white border border-slate-200 rounded-lg cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isActionProcessing}
+                onClick={() => handleExecuteDecision(confirmingApprovalReq.id, 'Approved', 'Approved by customer with confirmed timeline and cost revision.')}
+                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{isActionProcessing ? 'Updating...' : 'Authorize & Update Schedule'}</span>
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Customer Decline Confirmation Modal */}
+      {confirmingDeclineReq && (
+        <Modal
+          isOpen={true}
+          onClose={() => !isActionProcessing && setConfirmingDeclineReq(null)}
+          title="Decline Customization Proposal"
+          subtitle={`Request #${confirmingDeclineReq.id} - ${confirmingDeclineReq.unitNumber}`}
+          maxWidth="md"
+        >
+          <div className="space-y-4">
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900 space-y-1">
+              <p className="font-semibold">Are you sure you want to decline this proposal?</p>
+              <p className="text-[11px] text-rose-700">
+                This proposal will be marked as rejected. No costs will be charged and the delivery schedule will remain unchanged.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Reason or Feedback (Optional)
+              </label>
+              <textarea
+                rows={3}
+                value={declineRemarks}
+                onChange={(e) => setDeclineRemarks(e.target.value)}
+                placeholder="e.g. Quoted cost exceeds budget or timeline impact is too long..."
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg resize-none"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isActionProcessing}
+                onClick={() => setConfirmingDeclineReq(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 bg-white border border-slate-200 rounded-lg cursor-pointer disabled:opacity-50"
+              >
+                Keep Reviewing
+              </button>
+              <button
+                type="button"
+                disabled={isActionProcessing}
+                onClick={() => handleExecuteDecision(confirmingDeclineReq.id, 'Rejected', declineRemarks || 'Declined by customer.')}
+                className="px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow-xs cursor-pointer disabled:opacity-50"
+              >
+                {isActionProcessing ? 'Declining...' : 'Confirm Decline'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };
