@@ -83,8 +83,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess, onBackToHo
 
         {/* Brand Header */}
         <div className="text-center space-y-2">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/20 mb-1">
-            <HardHat className="w-8 h-8" />
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-slate-900 border border-amber-500/40 p-2 shadow-lg shadow-amber-500/20 mb-1 overflow-hidden">
+            <img src="/images/logo.png" alt="ArthiBuild Logo" className="w-full h-full object-contain" />
           </div>
           <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
             ArthiBuild

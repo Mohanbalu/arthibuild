@@ -132,8 +132,8 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate, onLoginClick }) 
             onClick={() => scrollToSection('hero')}
             className="flex items-center gap-3 cursor-pointer group"
           >
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-amber-500 via-amber-600 to-amber-700 flex items-center justify-center shadow-lg shadow-amber-500/20 group-hover:scale-105 transition-transform">
-              <HardHat className="w-6 h-6 text-slate-950" />
+            <div className="w-11 h-11 rounded-xl bg-slate-950 border border-amber-500/30 p-1 flex items-center justify-center shadow-lg shadow-amber-500/20 group-hover:scale-105 transition-transform overflow-hidden">
+              <img src="/images/logo.png" alt="ArthiBuild Logo" className="w-full h-full object-contain" />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -1074,8 +1074,8 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate, onLoginClick }) 
             {/* Col 1: Brand */}
             <div className="space-y-3 md:col-span-1">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center">
-                  <HardHat className="w-5 h-5 text-slate-950" />
+                <div className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 p-0.5 flex items-center justify-center overflow-hidden">
+                  <img src="/images/logo.png" alt="ArthiBuild Logo" className="w-full h-full object-contain" />
                 </div>
                 <span className="text-lg font-black text-white">
                   Arthi<span className="text-amber-400">Build</span>

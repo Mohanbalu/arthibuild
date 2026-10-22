@@ -68,8 +68,8 @@ export const Header: React.FC<HeaderProps> = ({
           onClick={() => onNavigate(getDefaultDashboardForRole(currentUser.role))}
           className="flex items-center gap-2.5 text-left group cursor-pointer"
         >
-          <div className="w-9 h-9 rounded-lg bg-slate-900 text-amber-400 flex items-center justify-center font-bold shadow-xs group-hover:bg-slate-800 transition-colors">
-            <HardHat className="w-5 h-5 text-amber-400" />
+          <div className="w-9 h-9 rounded-lg bg-slate-900 border border-slate-800 p-1 flex items-center justify-center overflow-hidden shadow-xs group-hover:bg-slate-800 transition-colors">
+            <img src="/images/logo.png" alt="ArthiBuild Logo" className="w-full h-full object-contain" />
           </div>
           <div className="whitespace-nowrap">
             <span className="text-base font-bold tracking-tight text-slate-900 group-hover:text-amber-600 transition-colors">
